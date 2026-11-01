@@ -147,7 +147,7 @@ Item {
           border.color: Theme.edge
           Text {
             anchors.centerIn: parent
-            text: app.syncingRoster ? "Syncing…" : "Sync bots from Grok Bot"
+            text: app.syncingRoster ? "Syncing…" : "Sync bots"
             textFormat: Text.PlainText
             color: app.syncingRoster ? Theme.textMuted : Theme.text
             font.family: app.fontFamily
@@ -156,13 +156,13 @@ Item {
           }
           HoverArea {
             enabled: !app.syncingRoster
-            label: "Sync bots from Grok Bot"
+            label: "Sync bots"
             onActivated: app.syncRoster()
           }
         }
         Text {
           width: parent.width
-          text: app.syncStatus || "Refresh from the bot list saved by your Grok Bot app."
+          text: app.syncStatus || "Refresh from your Hermes profiles, or from the Grok Bot app outside Hermes mode."
           textFormat: Text.PlainText
           wrapMode: Text.Wrap
           color: Theme.textMuted

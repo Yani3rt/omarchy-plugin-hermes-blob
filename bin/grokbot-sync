@@ -188,6 +188,143 @@ def app_roster():
     return bots
 
 
+HERMES_PROFILE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+PALETTE = {
+    "black": (0x00, 0x00, 0x00), "brown": (0x93, 0x64, 0x39), "red": (0xFF, 0x26, 0x3C),
+    "orange": (0xFF, 0x67, 0x00), "yellow": (0xFF, 0x98, 0x00), "green": (0x00, 0xC9, 0x72),
+    "cyan": (0x00, 0xBC, 0xA6), "blue": (0x10, 0x84, 0xFE), "violet": (0x91, 0x59, 0xFE),
+    "magenta": (0xFF, 0x30, 0x9B), "gray": (0x77, 0x77, 0x77),
+}
+# Hermes Bot Mode silhouettes that have no same-named companion shape.
+HERMES_SHAPES = {"blobatar": "blob", "organic": "blob", "round": "blob", "boxy": "squircle",
+                 "nub": "pebble", "sun": "burst"}
+COMPANION_SHAPES = {
+    "blob", "cloud", "squircle", "sparkle", "clover", "heart", "flower", "teardrop", "tablet",
+    "wedge", "gem", "burst", "hex", "pebble", "circle", "dome", "crescent", "pumpkin", "drop",
+    "egg", "bean", "leaf", "sprout", "pill", "capsule", "cylinder", "peanut", "triangle",
+    "bolt", "pentagon", "shield", "crystal", "hexagon", "heptagon", "octagon", "square",
+    "diamond", "arch", "ghost", "spark", "star",
+}
+
+
+def hermes_root():
+    configured = str(desktop_config().get("hermesRoot") or "")
+    if configured.startswith("/") and "/.." not in configured:
+        return configured
+    return os.path.join(os.environ.get("HOME", ""), ".hermes")
+
+
+def parse_rgb(value):
+    text = str(value or "").strip().lower()
+    match = re.fullmatch(r"#([0-9a-f]{6})", text)
+    if match:
+        raw = match.group(1)
+        return tuple(int(raw[i:i + 2], 16) for i in (0, 2, 4))
+    match = re.fullmatch(r"hsla?\(\s*([\d.]+)(?:deg)?[\s,]+([\d.]+)%[\s,]+([\d.]+)%.*\)", text)
+    if match:
+        import colorsys
+        h, s, l = (float(match.group(1)) % 360) / 360, float(match.group(2)) / 100, float(match.group(3)) / 100
+        r, g, b = colorsys.hls_to_rgb(h, min(l, 1), min(s, 1))
+        return (round(r * 255), round(g * 255), round(b * 255))
+    return None
+
+
+def nearest_color(value, fallback_seed):
+    rgb = parse_rgb(value)
+    if rgb is None:
+        if str(value or "").strip().lower() in PALETTE:
+            return str(value).strip().lower()
+        # Stable per bot, so an undecorated profile keeps its colour across syncs.
+        names = [name for name in PALETTE if name not in ("black", "gray", "brown")]
+        return names[sum(fallback_seed.encode()) % len(names)]
+    import colorsys
+    hue, light, sat = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
+    best, best_score = "blue", None
+    for name, ref in PALETTE.items():
+        rh, rl, rs = colorsys.rgb_to_hls(*(c / 255 for c in ref))
+        if sat < 0.15 or rs < 0.15:
+            score = abs(light - rl) + (0 if (sat < 0.15) == (rs < 0.15) else 2)
+        else:
+            dh = min(abs(hue - rh), 1 - abs(hue - rh))
+            score = dh * 4 + abs(light - rl) * 0.5
+        if best_score is None or score < best_score:
+            best, best_score = name, score
+    return best
+
+
+def nearest_shape(value):
+    shape = str(value or "").strip().lower()
+    shape = HERMES_SHAPES.get(shape, shape)
+    return shape if shape in COMPANION_SHAPES else "blob"
+
+
+def read_yaml(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return {}
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or st.st_size > MAX_PROFILE_BYTES:
+        return {}
+    try:
+        import yaml
+        with open(path, "r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def hermes_roster(root=None, primary=None):
+    """One bot per Hermes profile: the profile name is the bot id, so an ask can be
+    routed to that profile's canonical Bot Chat. Only presentation metadata is read
+    (profile.yaml title, description and Bot Mode look) — never config, keys or chats."""
+    root = root or hermes_root()
+    if not os.path.isdir(root):
+        raise ValueError(f"No Hermes install found at {root}.")
+    primary = str(primary or desktop_config().get("hermesPrimary") or "default")
+    found = []
+    if os.path.isfile(os.path.join(root, "config.yaml")):
+        found.append(("default", root))
+    profiles = os.path.join(root, "profiles")
+    try:
+        names = sorted(os.listdir(profiles))
+    except OSError:
+        names = []
+    for name in names:
+        directory = os.path.join(profiles, name)
+        if not HERMES_PROFILE.fullmatch(name) or not inside(profiles, directory):
+            continue
+        try:
+            if stat.S_ISDIR(os.lstat(directory).st_mode) and os.path.isfile(os.path.join(directory, "config.yaml")):
+                found.append((name, directory))
+        except OSError:
+            continue
+    bots = []
+    for name, directory in found:
+        meta = read_yaml(os.path.join(directory, "profile.yaml"))
+        look = (meta.get("ui_meta") or {}).get("hermes-bots") if isinstance(meta.get("ui_meta"), dict) else None
+        look = look if isinstance(look, dict) else {}
+        if look.get("hidden") is True:
+            continue
+        title = str(look.get("title") or meta.get("display_name") or "").strip()
+        label = title or name.replace("-", " ").replace("_", " ").title()
+        bots.append({
+            "id": name,
+            "name": label[:160],
+            "shortName": label[:160],
+            "description": redact_role(meta.get("description") or ""),
+            "avatarShape": nearest_shape(look.get("shape")),
+            "avatarColor": nearest_color(look.get("color"), name),
+            "isPrimary": name == primary,
+        })
+    if not bots:
+        raise ValueError(f"No Hermes profiles found under {root}.")
+    if not any(bot["isPrimary"] for bot in bots):
+        bots[0]["isPrimary"] = True
+    bots.sort(key=lambda item: (not item["isPrimary"], item["shortName"].lower()))
+    return bots
+
+
 def write_roster(path, bots):
     parent = os.path.dirname(path)
     os.makedirs(parent, mode=0o755, exist_ok=True)
@@ -207,8 +344,27 @@ def main(argv=None):
     parser.add_argument("--from", dest="source", help="agents directory containing */profile.json")
     parser.add_argument("--output", help="roster path (default: ~/.config/omarchy/grokbot-bots.json)")
     parser.add_argument("--seed", help="copy this JSON roster instead of reading profiles")
+    parser.add_argument("--hermes", action="store_true", help="one bot per Hermes Agent profile")
+    parser.add_argument("--auto", action="store_true",
+                        help="--hermes when dispatch is hermes in grokbot-desktop.json, else --app")
     args = parser.parse_args(argv)
     output = args.output or os.path.join(config_dir(), "grokbot-bots.json")
+    if args.auto:
+        if str(desktop_config().get("dispatch") or "").lower() == "hermes":
+            args.hermes = True
+        else:
+            args.app = True
+    if args.hermes:
+        if args.source or args.seed or (args.app and not args.auto):
+            parser.error("--hermes cannot be combined with --app, --from or --seed")
+        try:
+            bots = hermes_roster()
+            write_roster(output, bots)
+        except (ValueError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"Synced {len(bots)} bots from Hermes.")
+        return 0
     if args.app:
         if args.source or args.seed:
             parser.error("--app cannot be combined with --from or --seed")

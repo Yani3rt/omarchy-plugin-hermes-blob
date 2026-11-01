@@ -16,6 +16,11 @@ command) on stdin, with a 64 KiB stdout ceiling. Grok reads that pipe through
 yet is reported, not installed. The shell launches this
 file as /usr/bin/python3 -I so site and user environment modules are ignored.
 
+Hermes mode ("dispatch": "hermes") treats the bot id as a Hermes Agent profile
+name and runs one turn in that profile's canonical "Bot Chat" session, so every
+bot keeps one ongoing conversation and can hand work to its teammates with
+message_agent. The prompt goes on stdin (--query-file -), never on argv.
+
 Stdin is a JSON object: {"botId","botName","prompt","host"?,"attachments"?}.
 Attachments are files saved by grokbot-attach; only those inside its
 private runtime directory are accepted. Agent mode runs the agent in that
@@ -54,6 +59,14 @@ WEBHOOK_CONNECT_TIMEOUT = 10
 TARGET = "io.github.tcballard.grokbot-desktop"
 ASK_ID = re.compile(r"^[0-9a-f]{8,32}$")
 AGENT_TIMEOUT = 180
+HERMES_TIMEOUT = 600
+HERMES_PROFILE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+HERMES_BOT_CHAT = "Bot Chat"
+# Prepended to each Hermes turn. Kept short: it is stored in the Bot Chat.
+HERMES_NOTE = "[via Omarchy desktop bubble: plain text only, a few short sentences]"
+# The process group of the running agent, so a Stop (SIGTERM from the shell)
+# ends the agent's turn too instead of orphaning it.
+CHILD_PGID = 0
 KEY_NAME = "GROKBOT_WEBHOOK_KEY"
 # A header name as HTTP defines a token. The headers the helper sets itself
 # cannot be replaced by a configured one.
@@ -594,6 +607,37 @@ def agent_command(entry, desktop):
     return [resolved, *argv[1:]], name, False, ""
 
 
+def hermes_root(entry, desktop):
+    configured = str(setting(entry, desktop, "hermesRoot") or "")
+    if safe_abs(configured):
+        return configured
+    return os.path.join(os.environ.get("HOME", ""), ".hermes")
+
+
+def hermes_command(entry, desktop, bot_id, workdir):
+    """Return (argv, problem) for one Bot Chat turn in the profile named bot_id."""
+    profile = str(bot_id or "")
+    if not HERMES_PROFILE.fullmatch(profile):
+        return [], "This bot isn't a Hermes profile. Sync bots from Hermes in Appearance & bots."
+    root = hermes_root(entry, desktop)
+    home = root if profile == "default" else os.path.join(root, "profiles", profile)
+    if not os.path.isfile(os.path.join(home, "config.yaml")):
+        return [], f"The Hermes profile {plain(profile, 64)} was not found. Sync bots again."
+    launcher = resolve_launcher(str(setting(entry, desktop, "hermesCommand") or "hermes"), launcher_dirs())
+    if not launcher:
+        return [], "hermes was not found in ~/.local/bin or /usr/bin."
+    return [launcher, "-p", profile, "chat", "--in", workdir, "-c", HERMES_BOT_CHAT,
+            "--create-if-missing", "--query-file", "-", "-Q"], ""
+
+
+def ask_timeout(entry, desktop, fallback):
+    try:
+        value = int(setting(entry, desktop, "askTimeoutSeconds"))
+    except (TypeError, ValueError):
+        return fallback
+    return max(30, min(1800, value))
+
+
 def persona(bot_name):
     name = plain(bot_name, 80) or "Bob"
     return (
@@ -655,7 +699,14 @@ def with_attachments(prompt, attachments):
     return f"{prompt}\n\nThe attached {noun} in the current directory: {names}. Look at them before answering."
 
 
-def run_agent(argv, stdin_text, env, label="agent", cwd=None):
+def _stop_child(signum, frame):
+    del frame
+    _kill_group(CHILD_PGID)
+    sys.exit(128 + signum)
+
+
+def run_agent(argv, stdin_text, env, label="agent", cwd=None, timeout=AGENT_TIMEOUT):
+    global CHILD_PGID
     try:
         proc = subprocess.Popen(
             argv,
@@ -669,6 +720,7 @@ def run_agent(argv, stdin_text, env, label="agent", cwd=None):
     except OSError:
         print("could not start the agent", file=sys.stderr)
         return 127
+    CHILD_PGID = proc.pid
     out_fd = proc.stdout.fileno()
     err_fd = proc.stderr.fileno()
     os.set_blocking(out_fd, False)
@@ -682,7 +734,7 @@ def run_agent(argv, stdin_text, env, label="agent", cwd=None):
     ceilings = {out_fd: STDOUT_CEILING, err_fd: STDERR_CEILING}
     open_fds = [out_fd, err_fd]
     overflow = False
-    deadline = time.monotonic() + AGENT_TIMEOUT
+    deadline = time.monotonic() + timeout
     while open_fds:
         if time.monotonic() > deadline:
             _kill_group(proc.pid)
@@ -813,7 +865,7 @@ def parse_request(raw):
 def dispatch_mode(entry, desktop):
     mode = str(setting(entry, desktop, "dispatch") or "").lower()
     url = validate_webhook_url(setting(entry, desktop, "webhookUrl") or os.environ.get("GROKBOT_WEBHOOK_URL", ""))
-    if mode not in ("webhook", "agent"):
+    if mode not in ("webhook", "agent", "hermes"):
         mode = "webhook" if url else "agent"
     return mode, url
 
@@ -854,6 +906,17 @@ def main(argv=None):
                 return 3
             extra = (name, value)
         return post_webhook(url, key, payload, extra)
+    signal.signal(signal.SIGTERM, _stop_child)
+    if mode == "hermes":
+        attachments = payload["attachments"]
+        workdir = attachment_dir() if attachments else os.environ.get("HOME", "")
+        argv, problem = hermes_command(entry, desktop, payload["botId"], workdir)
+        if not argv:
+            print(problem, file=sys.stderr)
+            return 127
+        text = HERMES_NOTE + "\n\n" + with_attachments(payload["prompt"], attachments)
+        return run_agent(argv, text, child_env("hermes", True), "hermes", workdir or None,
+                         ask_timeout(entry, desktop, HERMES_TIMEOUT))
     argv, agent, custom, problem = agent_command(entry, desktop)
     if not argv:
         print(problem, file=sys.stderr)
@@ -867,7 +930,8 @@ def main(argv=None):
     # With images, the agent works in their directory so its file tools
     # can open them without reaching outside it.
     cwd = attachment_dir() if attachments else None
-    return run_agent(argv, text, child_env(agent, custom), agent or "agent command", cwd)
+    return run_agent(argv, text, child_env(agent, custom), agent or "agent command", cwd,
+                     ask_timeout(entry, desktop, AGENT_TIMEOUT))
 
 
 if __name__ == "__main__":

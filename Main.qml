@@ -51,13 +51,13 @@ Item {
 
   function syncRoster() {
     if (syncProc.running) return
-    root.syncStatus = "Syncing from Grok Bot…"
+    root.syncStatus = "Syncing bots…"
     syncProc.running = true
   }
 
   Process {
     id: syncProc
-    command: ["/usr/bin/python3", "-I", root.syncHelper, "--app", "--output", root.botsPath]
+    command: ["/usr/bin/python3", "-I", root.syncHelper, "--auto", "--output", root.botsPath]
     clearEnvironment: true
     environment: ({ HOME: root.homePath, XDG_CONFIG_HOME: Quickshell.env("XDG_CONFIG_HOME") || root.homePath + "/.config" })
     stdout: StdioCollector { id: syncOut }
@@ -1576,7 +1576,9 @@ Item {
 
   Timer {
     id: askTimeout
-    interval: 180000
+    // A backstop only: bin/grokbot-ask enforces the real limit (askTimeoutSeconds,
+    // 180 s for agents and 600 s for Hermes by default, at most 1800 s) and says why.
+    interval: 1830000
     onTriggered: {
       root.cancelAsk()
       if (root.deliver(root.askBotId, "That took too long, so I stopped waiting.")) root.replyLanded()
