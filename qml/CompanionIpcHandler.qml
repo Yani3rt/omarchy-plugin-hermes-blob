@@ -62,5 +62,8 @@ Item {
     }
     function dismiss(): string { return host.dismissSurfaces() ? "dismissed" : "nothing" }
     function ping(): string { return "ok" }
+    // Read-only state for scripts and tests: the bot on screen, whether an ask runs,
+    // unread bots, the bridge, and the start of the visible reply.
+    function status(): string { return host.statusJson() }
   }
 }

@@ -42,6 +42,8 @@ Item {
   readonly property string bundledBotsPath: root.localPath(Qt.resolvedUrl("data/bots.json"))
   readonly property string cursorHelper: root.localPath(Qt.resolvedUrl("bin/grokbot-cursor"))
   readonly property string askHelper: root.localPath(Qt.resolvedUrl("bin/grokbot-ask"))
+  readonly property string bridgeHelper: root.localPath(Qt.resolvedUrl("bin/hermes-blob-bridge"))
+  readonly property string desktopConfigPath: root.homePath + "/.config/omarchy/grokbot-desktop.json"
   readonly property string dictateHelper: root.localPath(Qt.resolvedUrl("bin/grokbot-dictate"))
   readonly property string attachHelper: root.localPath(Qt.resolvedUrl("bin/grokbot-attach"))
 
@@ -356,6 +358,152 @@ Item {
     onLoadFailed: {
       root.rosterRead = true
       root.applyBots("")
+    }
+  }
+
+  // grokbot-desktop.json: the shell only needs dispatch and the Hermes paths from it.
+  property var desktopConf: ({})
+  readonly property bool hermesMode: String(root.desktopConf.dispatch || "").toLowerCase() === "hermes"
+  readonly property string hermesPython: {
+    var given = String(root.desktopConf.hermesPython || "")
+    if (given.indexOf("/") === 0 && given.indexOf("..") < 0) return given
+    return root.homePath + "/.hermes/hermes-agent/venv/bin/python"
+  }
+
+  FileView {
+    id: desktopFile
+    path: root.desktopConfigPath
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      var data = null
+      try { data = JSON.parse(text()) } catch (e) { data = null }
+      root.desktopConf = data && typeof data === "object" ? data : ({})
+    }
+    onFileChanged: reload()
+    onLoadFailed: root.desktopConf = ({})
+  }
+
+  // Hermes mode keeps one bridge process attached to every bot's Bot Chat on
+  // the local Hermes gateway (bin/hermes-blob-bridge). It talks JSON Lines on
+  // stdin/stdout only, so no prompt or reply ever reaches a command line.
+  property bool bridgeReady: false
+  property var bridgeUp: ({})
+  property string bridgeAskId: ""
+  property int bridgeFailures: 0
+
+  function bridgeSend(message) {
+    if (!bridgeProc.running) return false
+    bridgeProc.write(JSON.stringify(message) + "\n")
+    return true
+  }
+
+  function bridgeUsable(botId) {
+    return root.hermesMode && bridgeProc.running && root.bridgeReady && root.bridgeUp[botId] === true
+  }
+
+  Process {
+    id: bridgeProc
+    command: [root.hermesPython, "-I", root.bridgeHelper]
+    clearEnvironment: true
+    environment: root.askEnvironment()
+    stdinEnabled: true
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function (line) { root.bridgeLine(line) }
+    }
+    onStarted: {
+      root.bridgeReady = false
+      root.bridgeUp = ({})
+    }
+    onExited: function (code) {
+      root.bridgeReady = false
+      root.bridgeUp = ({})
+      if (root.bridgeAskId !== "" && root.asking) root.finishBridgeAsk("", "The Hermes bridge stopped. Ask again to use the command line.")
+      root.bridgeFailures++
+      if (root.hermesMode) bridgeRestart.restart()
+    }
+  }
+
+  Timer {
+    id: bridgeRestart
+    interval: Math.min(60000, 2000 * Math.pow(2, Math.min(5, root.bridgeFailures)))
+    onTriggered: if (root.hermesMode && !bridgeProc.running) bridgeProc.running = true
+  }
+
+  // Started and stopped imperatively: the restart timer would break a binding.
+  function syncBridge() {
+    var want = root.hermesMode && root.ready && root.bridgeHelper.indexOf("/bin/hermes-blob-bridge") >= 0
+    if (want && !bridgeProc.running) bridgeProc.running = true
+    else if (!want && bridgeProc.running) bridgeProc.running = false
+  }
+  onHermesModeChanged: root.syncBridge()
+  onReadyChanged: root.syncBridge()
+
+  // A roster change re-attaches the bridge to the new set of bots.
+  onBotsChanged: root.bridgeSend({ op: "reload" })
+
+  function statusJson() {
+    return JSON.stringify({
+      bot: root.threadBotId,
+      asking: root.asking,
+      viaBridge: root.bridgeAskId !== "",
+      unread: root.unreadBots,
+      bridge: { mode: root.hermesMode, running: bridgeProc.running, ready: root.bridgeReady, up: root.bridgeUp },
+      body: String(root.bubbleBody || "").slice(0, 300)
+    })
+  }
+
+  function finishBridgeAsk(text, failure) {
+    root.bridgeAskId = ""
+    askTimeout.stop()
+    if (!root.asking) return
+    root.asking = false
+    var ok = text !== ""
+    var here = root.deliver(root.askBotId, ok ? text : (failure || "The ask didn't return a reply."))
+    if (here && ok) {
+      root.flashExpression("happy", 1600)
+      syllableAnim.restart()
+    } else {
+      root.expression = "idle"
+    }
+    if (here) root.replyLanded()
+  }
+
+  function bridgeLine(line) {
+    var ev = null
+    try { ev = JSON.parse(String(line)) } catch (e) { return }
+    if (!ev || typeof ev !== "object") return
+    var bot = String(ev.bot || "")
+    var mine = ev.askId !== undefined && String(ev.askId) === root.bridgeAskId && root.bridgeAskId !== ""
+    var text = root.cleanText(ev.text, 4000)
+    if (ev.ev === "ready") {
+      root.bridgeReady = true
+      root.bridgeFailures = 0
+    } else if (ev.ev === "status") {
+      var up = Object.assign({}, root.bridgeUp)
+      up[bot] = ev.state === "up"
+      root.bridgeUp = up
+    } else if (ev.ev === "delta" || ev.ev === "progress") {
+      // Live text for the ask on screen; other turns land whole, on completion.
+      if (mine && root.asking && text !== "") root.deliver(root.askBotId, text)
+    } else if (ev.ev === "complete") {
+      if (mine) root.finishBridgeAsk(text, "")
+      else if (ev.askId === undefined && text !== "") root.receiveReply(bot, text)
+    } else if (ev.ev === "error") {
+      if (!mine) return
+      root.bridgeAskId = ""
+      if (ev.code === "unavailable" && root.asking) {
+        // Not attached after all: the command line still reaches the Bot Chat.
+        root.startProcessAsk()
+        return
+      }
+      root.finishBridgeAsk("", text)
+    } else if (ev.ev === "prompt") {
+      var where = "Answer it in Hermes Desktop or the TUI."
+      var ask = (ev.kind === "approval" ? "Needs your approval: " : "Has a question: ") + text + " " + where
+      if (mine && root.asking) root.deliver(root.askBotId, ask)
+      else if (text !== "") root.receiveReply(bot, ask)
     }
   }
 
@@ -1485,7 +1633,7 @@ Item {
   }
 
   function launchAsk(prompt) {
-    if (askProc.running) return "busy"
+    if (askProc.running || root.bridgeAskId !== "") return "busy"
     root.openBubble()
     root.archiveExchange()
     root.askedText = String(prompt || "")
@@ -1514,16 +1662,34 @@ Item {
     root.askBotId = root.threadBotId
     root.asking = true
     root.expression = "work"
+    // Hermes mode: the bridge submits to the bot's attached Bot Chat. Attachments
+    // and a bridge that is not attached yet go through the command-line helper.
+    if (root.askedFiles.length === 0 && bot && root.bridgeUsable(bot.id)) {
+      root.bridgeAskId = root.pendingAskId
+      if (root.bridgeSend({ op: "ask", askId: root.pendingAskId, bot: bot.id, text: String(prompt || "") })) {
+        askTimeout.restart()
+        return "ok"
+      }
+      root.bridgeAskId = ""
+    }
+    root.startProcessAsk()
+    return "ok"
+  }
+
+  function startProcessAsk() {
     askProc.command = ["/usr/bin/setpriv", "--pdeathsig", "TERM", "/usr/bin/python3", "-I", root.askHelper]
     askProc.environment = root.askEnvironment()
     askProc.stdinEnabled = true
     askProc.running = true
     askTimeout.restart()
-    return "ok"
   }
 
   function cancelAsk() {
     askTimeout.stop()
+    if (root.bridgeAskId !== "") {
+      root.bridgeSend({ op: "stop", bot: root.askBotId })
+      root.bridgeAskId = ""
+    }
     if (askProc.running) askProc.running = false
     root.asking = false
   }

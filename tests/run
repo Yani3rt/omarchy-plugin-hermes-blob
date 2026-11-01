@@ -4,3 +4,4 @@ cd "$(dirname "$0")/.."
 node scripts/check.mjs
 node --test tests/*.test.mjs
 python3 tests/sync-app.py
+python3 tests/bridge-state.py

@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""Hermes Blob bridge: keep the companion attached to each bot's Hermes Bot Chat.
+
+The shell starts this once, under Hermes' own Python (it uses Hermes' gateway
+client, the same one `hermes chat`, the TUI and Desktop use). For every bot in
+the roster that is a Hermes profile it attaches to that profile's canonical
+"Bot Chat" session on the local gateway, as one more viewer, and then:
+
+* submits asks the shell sends it (`prompt.submit`), and streams the reply back;
+* reports turns it did not start — a teammate's late handoff reply, a routine,
+  a turn from Desktop — so they land in that bot's conversation;
+* interrupts a turn on Stop (`session.interrupt`), inside the gateway.
+
+Authentication is the gateway's own: a one-use ticket from its private control
+socket, which only this user's processes can reach. No API key is involved.
+
+Transport to the shell is JSON Lines on stdin/stdout, never argv, so private
+text never shows up in process listings. stderr carries diagnostics only and
+never prompt or reply text.
+
+  shell -> bridge   {"op": "ask", "askId", "bot", "text"}
+                    {"op": "stop", "bot"}
+                    {"op": "reload"}                       re-read the roster
+  bridge -> shell   {"ev": "ready"}
+                    {"ev": "status", "bot", "state": "up"|"down", "detail"?}
+                    {"ev": "delta", "bot", "askId"?, "text"}     text so far
+                    {"ev": "progress", "bot", "askId"?, "text"}
+                    {"ev": "complete", "bot", "askId"?, "text", "status"}
+                    {"ev": "error", "bot", "askId", "text", "code"}
+                    {"ev": "prompt", "bot", "askId"?, "promptId", "kind", "text"}
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import re
+import sqlite3
+import sys
+import uuid
+from pathlib import Path
+
+PROFILE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+ASK_ID = re.compile(r"^[0-9a-f]{8,32}$")
+BOT_CHAT = "Bot Chat"
+TEXT_LIMIT = 16000
+# Same note the CLI path prepends; it is stored with the turn, so it stays short.
+NOTE = "[via Omarchy desktop bubble: plain text only, a few short sentences]"
+RETRY_MIN, RETRY_MAX = 2.0, 30.0
+
+
+def config_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.environ.get("HOME", ""), ".config")
+    return Path(base) / "omarchy"
+
+
+def read_json(path: Path, limit: int = 1024 * 1024):
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def desktop_config() -> dict:
+    data = read_json(config_dir() / "grokbot-desktop.json", 64 * 1024)
+    return data if isinstance(data, dict) else {}
+
+
+def hermes_root(conf: dict) -> Path:
+    configured = str(conf.get("hermesRoot") or "")
+    if configured.startswith("/") and "/.." not in configured:
+        return Path(configured)
+    return Path(os.environ.get("HOME", "")) / ".hermes"
+
+
+def profile_home(root: Path, profile: str) -> Path:
+    return root if profile == "default" else root / "profiles" / profile
+
+
+def roster_profiles(root: Path) -> list[str]:
+    data = read_json(config_dir() / "grokbot-bots.json")
+    bots = data.get("bots") if isinstance(data, dict) else None
+    out = []
+    for bot in bots if isinstance(bots, list) else []:
+        bot_id = str((bot or {}).get("id") or "")
+        if PROFILE.fullmatch(bot_id) and (profile_home(root, bot_id) / "config.yaml").is_file() and bot_id not in out:
+            out.append(bot_id)
+    return out
+
+
+def bot_chat_id(home: Path) -> str:
+    """The profile's canonical Bot Chat: the newest unarchived session titled exactly "Bot Chat"."""
+    path = home / "state.db"
+    if not path.is_file():
+        return ""
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            row = db.execute(
+                "select id from sessions where title = ? and coalesce(archived, 0) = 0 "
+                "order by coalesce(last_activity_at, started_at) desc limit 1", (BOT_CHAT,)).fetchone()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return ""
+    return str(row[0]) if row else ""
+
+
+def clip(text) -> str:
+    return str(text or "")[:TEXT_LIMIT]
+
+
+class Emitter:
+    """One JSON object per line on stdout; the only channel the shell reads."""
+
+    def __init__(self, stream=None):
+        self.stream = stream or sys.stdout
+
+    def __call__(self, **event):
+        self.stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+        self.stream.flush()
+
+
+def log(message: str) -> None:
+    print(f"hermes-blob-bridge: {message}", file=sys.stderr, flush=True)
+
+
+class BotState:
+    """Event bookkeeping for one bot's Bot Chat, independent of the transport (unit-tested)."""
+
+    def __init__(self, bot: str, emit):
+        self.bot = bot
+        self.emit = emit
+        self.session_id = ""
+        self.generation = 0
+        self.mine: dict[str, str] = {}        # admission id -> askId
+        self.streams: dict[str, str] = {}     # admission id -> text so far
+        self.held: list[dict] = []            # events seen while a submit's receipt is in flight
+        self.submitting = 0
+
+    def own(self, admission: str, ask_id: str) -> None:
+        """A submit's receipt arrived: replay what the owner published before it."""
+        self.mine[admission] = ask_id
+        self.submitting = max(0, self.submitting - 1)
+        held, self.held = self.held, []
+        for params in held:
+            self.handle(params)
+
+    def submit_failed(self) -> None:
+        self.submitting = max(0, self.submitting - 1)
+        held, self.held = self.held, []
+        for params in held:
+            self.handle(params)
+
+    def handle(self, params: dict) -> bool:
+        """Apply one event frame's params. Returns False when the session must be re-attached."""
+        if params.get("session_id") != self.session_id:
+            return True
+        kind = params.get("type")
+        payload = params.get("payload") or {}
+        if isinstance(params.get("execution_generation"), int):
+            self.generation = params["execution_generation"]
+        if kind == "session.replay_gap":
+            return False
+        if kind == "session.info":
+            if isinstance(payload.get("execution_generation"), int):
+                self.generation = payload["execution_generation"]
+            return True
+        admission = params.get("admission_id") or payload.get("admission_id") or ""
+        if not admission:
+            return True
+        if admission not in self.mine and self.submitting:
+            self.held.append(params)
+            return True
+        ask = self.mine.get(admission)
+        extra = {"askId": ask} if ask else {}
+        if kind == "message.start":
+            self.streams[admission] = ""
+        elif kind == "message.delta":
+            text = payload.get("text") or payload.get("delta") or payload.get("content") or ""
+            if isinstance(text, str) and text:
+                self.streams[admission] = clip(self.streams.get(admission, "") + text)
+                self.emit(ev="delta", bot=self.bot, text=self.streams[admission].strip(), **extra)
+        elif kind == "tool.start":
+            name = str(payload.get("tool_name") or payload.get("name") or "a tool")[:64]
+            # Text streamed before a tool call is commentary the final reply does not repeat.
+            self.streams[admission] = ""
+            self.emit(ev="progress", bot=self.bot, text=f"Using {name}…", **extra)
+        elif kind in ("approval.request", "clarify.request"):
+            self.emit(ev="prompt", bot=self.bot, promptId=str(payload.get("prompt_id") or ""),
+                      kind="approval" if kind == "approval.request" else "clarify",
+                      text=clip(payload.get("description") or payload.get("question") or payload.get("command") or ""),
+                      **extra)
+        elif kind == "message.complete":
+            text = payload.get("text") or payload.get("content") or self.streams.get(admission, "")
+            self.streams.pop(admission, None)
+            self.mine.pop(admission, None)
+            status = str(payload.get("status") or payload.get("outcome") or "complete")
+            text = clip(text).strip()
+            if not text and ask is None:
+                return True  # an empty turn nobody here asked for (a [SILENT] wake): nothing to show
+            self.emit(ev="complete", bot=self.bot, text=text, status=status, **extra)
+        return True
+
+
+class BotLink:
+    """Keeps one profile's Bot Chat attached, reconnecting with backoff."""
+
+    def __init__(self, bridge: "Bridge", bot: str, home: Path):
+        self.bridge = bridge
+        self.bot = bot
+        self.home = home
+        self.state = BotState(bot, bridge.emit)
+        self.client = None
+        self.up = asyncio.Event()
+        self.task = asyncio.create_task(self.run())
+
+    async def run(self) -> None:
+        delay = RETRY_MIN
+        while True:
+            try:
+                await self.attach_once()
+                delay = RETRY_MIN
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # any transport failure: report, back off, retry
+                self.bridge.emit(ev="status", bot=self.bot, state="down", detail=str(exc)[:200])
+                log(f"{self.bot}: {type(exc).__name__}: {str(exc)[:200]}")
+            finally:
+                self.client = None
+                self.up.clear()
+            await asyncio.sleep(delay)
+            delay = min(RETRY_MAX, delay * 2)
+
+    async def attach_once(self) -> None:
+        from websockets.asyncio.client import connect
+        from hermes_cli.gateway_client import (GATEWAY_WS_PROTOCOL, GatewayClient, _session_ticket,
+                                               gateway_ws_target)
+        from hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime
+
+        session_id = await asyncio.to_thread(bot_chat_id, self.home)
+        if not session_id:
+            raise RuntimeError("no Bot Chat yet: open this bot once in Hermes Desktop or the CLI")
+        result = await asyncio.to_thread(ensure_gateway_runtime, self.home, idle_exit=True)
+        if not attachable(result):
+            raise RuntimeError(f"gateway {result.state}: {result.reason_code or 'not ready'}")
+        ticket = await asyncio.to_thread(_session_ticket, self.home, result.endpoint)
+        url, protocols = gateway_ws_target(result.endpoint, ticket)
+        async with connect(url, subprotocols=protocols, open_timeout=10, max_size=8 * 1024 * 1024,
+                           proxy=None) as ws:
+            if ws.subprotocol != GATEWAY_WS_PROTOCOL:
+                raise RuntimeError("gateway protocol mismatch; update or restart Hermes")
+            async with GatewayClient(ws) as client:
+                try:
+                    snapshot = await client.rpc("session.resume", session_id=session_id)
+                except Exception as exc:
+                    data = getattr(exc, "data", None) or {}
+                    if "cwd" in (data.get("fields") or [data.get("field")]):
+                        raise RuntimeError("its Bot Chat's saved working folder no longer exists; "
+                                           "reopen the Bot Chat in Hermes to repair it") from None
+                    raise
+                self.state.session_id = snapshot.get("stored_session_id") or session_id
+                self.state.generation = snapshot.get("execution_generation") or 0
+                self.client = client
+                self.up.set()
+                self.bridge.emit(ev="status", bot=self.bot, state="up")
+                while True:
+                    event = await client.events.get()
+                    if isinstance(event, Exception):
+                        raise RuntimeError("gateway disconnected")
+                    if not self.state.handle(event.get("params") or {}):
+                        raise RuntimeError("replay gap; re-attaching")
+
+    async def ask(self, ask_id: str, text: str) -> None:
+        client = self.client
+        if client is None:
+            self.bridge.emit(ev="error", bot=self.bot, askId=ask_id, code="unavailable",
+                             text="Not connected to Hermes yet.")
+            return
+        self.state.submitting += 1
+        try:
+            receipt = await client.rpc("prompt.submit", session_id=self.state.session_id,
+                                       input_id=uuid.uuid4().hex, text=NOTE + "\n\n" + text)
+        except Exception as exc:
+            self.state.submit_failed()
+            self.bridge.emit(ev="error", bot=self.bot, askId=ask_id, code="refused",
+                             text=f"Hermes refused the ask ({str(exc)[:120]}).")
+            return
+        admission = (receipt or {}).get("admission_id")
+        if not admission:
+            self.state.submit_failed()
+            self.bridge.emit(ev="error", bot=self.bot, askId=ask_id, code="refused",
+                             text="Hermes did not accept the ask.")
+            return
+        self.state.own(admission, ask_id)
+
+    async def stop(self) -> None:
+        client = self.client
+        if client is None:
+            return
+        try:
+            await client.rpc("session.interrupt", session_id=self.state.session_id,
+                             execution_generation=self.state.generation)
+        except Exception as exc:
+            log(f"{self.bot}: interrupt failed: {type(exc).__name__}")
+
+
+class Bridge:
+    def __init__(self, emit):
+        self.emit = emit
+        self.conf = desktop_config()
+        self.root = hermes_root(self.conf)
+        self.links: dict[str, BotLink] = {}
+
+    def sync_links(self) -> None:
+        wanted = roster_profiles(self.root)
+        for bot in list(self.links):
+            if bot not in wanted:
+                self.links.pop(bot).task.cancel()
+        for bot in wanted:
+            if bot not in self.links:
+                self.links[bot] = BotLink(self, bot, profile_home(self.root, bot))
+
+    async def command(self, line: str) -> None:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            return
+        if not isinstance(msg, dict):
+            return
+        op = msg.get("op")
+        bot = str(msg.get("bot") or "")
+        if op == "reload":
+            self.sync_links()
+            return
+        link = self.links.get(bot)
+        if op == "ask":
+            ask_id = str(msg.get("askId") or "")
+            text = str(msg.get("text") or "").replace("\x00", "").strip()
+            if not ASK_ID.fullmatch(ask_id) or not text:
+                return
+            if link is None:
+                self.emit(ev="error", bot=bot, askId=ask_id, code="unavailable",
+                          text="This bot isn't a Hermes profile the bridge knows.")
+                return
+            asyncio.create_task(link.ask(ask_id, text[:TEXT_LIMIT]))
+        elif op == "stop" and link is not None:
+            asyncio.create_task(link.stop())
+
+    async def run(self) -> None:
+        self.sync_links()
+        self.emit(ev="ready")
+        loop = asyncio.get_running_loop()
+        reader = asyncio.StreamReader(limit=1024 * 1024)
+        await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+        while True:
+            line = await reader.readline()
+            if not line:
+                return  # the shell went away
+            await self.command(line.decode("utf-8", errors="replace"))
+
+
+def main() -> int:
+    conf = desktop_config()
+    agent = str(conf.get("hermesAgentDir") or os.path.join(os.environ.get("HOME", ""), ".hermes", "hermes-agent"))
+    if not agent.startswith("/") or not os.path.isfile(os.path.join(agent, "hermes_cli", "gateway_client.py")):
+        log("Hermes Agent source not found; set hermesAgentDir")
+        return 3
+    sys.path.insert(0, agent)
+    try:
+        asyncio.run(Bridge(Emitter()).run())
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

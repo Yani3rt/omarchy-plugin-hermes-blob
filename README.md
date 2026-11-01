@@ -144,7 +144,28 @@ It routes a new transcript that starts with a wake phrase. It reads the clipboar
 
 Each ask is one JSON object on the stdin of `bin/grokbot-ask`, launched as `/usr/bin/setpriv` and `/usr/bin/python3 -I`. The prompt is not an argument.
 
-Set `dispatch` to `webhook` or `agent` in `~/.config/omarchy/grokbot-desktop.json`. The same keys on this plugin's `shell.json` entry win when they are present.
+Set `dispatch` to `webhook`, `agent` or `hermes` in `~/.config/omarchy/grokbot-desktop.json`. The same keys on this plugin's `shell.json` entry win when they are present.
+
+### Hermes mode
+
+`"dispatch": "hermes"` makes each bot a [Hermes Agent](https://github.com/NousResearch/hermes-agent) profile. **Sync bots** builds the roster from your profiles (`bin/grokbot-sync --hermes`), with each one's Bot Mode title, shape and colour mapped onto the companion's shapes and palette. Every ask goes to that profile's permanent **Bot Chat**, so each bot keeps one ongoing conversation and can hand work to its teammates with Hermes' `message_agent`.
+
+```json
+{
+  "dispatch": "hermes",
+  "hermesPrimary": "donna",
+  "askTimeoutSeconds": 600
+}
+```
+
+While Hermes mode is on, the shell keeps one bridge process (`bin/hermes-blob-bridge`, run under Hermes' own Python) attached to every bot's Bot Chat on the local Hermes gateway, the same way Hermes Desktop and the TUI attach. It signs in with a one-use ticket from the gateway's private socket, so no API key is stored, and it talks to the shell only through stdin and stdout. Through the bridge:
+
+- replies stream into the bubble as they are written, and an ask takes about as long as the model does;
+- turns the companion did not start, such as a teammate's late handoff reply or a routine, land in that bot's conversation with an unread dot;
+- Stop interrupts the turn inside the gateway;
+- an approval or a clarifying question is shown, to be answered in Hermes Desktop or the TUI for now.
+
+Asks with attachments, or for a bot the bridge has not attached yet, go through the command-line helper instead (`hermes -p <profile> chat -c "Bot Chat" --query-file - -Q`). Optional keys: `hermesRoot` (default `~/.hermes`), `hermesAgentDir` (default `~/.hermes/hermes-agent`), `hermesPython` (default its `venv/bin/python`), `hermesCommand` (default `hermes`). `omarchy-shell io.github.tcballard.grokbot-desktop status` prints the bot on screen, the bridge's state per bot and the start of the visible reply.
 
 ### Connect to Grok Bot
 

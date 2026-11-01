@@ -165,3 +165,27 @@ test('hermes dispatch refuses a malformed bot id before touching the filesystem'
     assert.match(result.stderr, /isn't a Hermes profile/)
   }
 })
+
+test('Hermes mode keeps a bridge on stdin/stdout and falls back to the command line', () => {
+  const main = fs.readFileSync(path.join(root, 'Main.qml'), 'utf8')
+  // The bridge runs Hermes' own Python, isolated, and only ever hears JSON on stdin.
+  assert.match(main, /command: \[root\.hermesPython, "-I", root\.bridgeHelper\]/)
+  assert.match(main, /bridgeProc\.write\(JSON\.stringify\(message\) \+ "\\n"\)/)
+  assert.match(main, /clearEnvironment: true\n\s*environment: root\.askEnvironment\(\)\n\s*stdinEnabled: true/)
+  // Attachments, or a bot the bridge has not attached, take the command-line path.
+  assert.match(main, /if \(root\.askedFiles\.length === 0 && bot && root\.bridgeUsable\(bot\.id\)\)/)
+  assert.match(main, /if \(ev\.code === "unavailable" && root\.asking\) \{[^}]*root\.startProcessAsk\(\)/)
+  // Stop interrupts inside the gateway; a turn nobody here asked for lands as that bot's reply.
+  assert.match(main, /root\.bridgeSend\(\{ op: "stop", bot: root\.askBotId \}\)/)
+  assert.match(main, /else if \(ev\.askId === undefined && text !== ""\) root\.receiveReply\(bot, text\)/)
+  for (const file of ['qml/CompanionShellIpc.qml', 'qml/CompanionIpcHandler.qml']) {
+    assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /function status\(\): string \{ return host\.statusJson\(\) \}/)
+  }
+})
+
+test('the bridge never puts prompt or reply text on its command line or stderr', () => {
+  const source = fs.readFileSync(path.join(root, 'bin/hermes-blob-bridge'), 'utf8')
+  assert.doesNotMatch(source, /log\([^)]*\btext\b/)
+  assert.match(source, /input_id=uuid\.uuid4\(\)\.hex, text=NOTE \+ "\\n\\n" \+ text/)
+  assert.match(source, /asyncio\.to_thread\(_session_ticket, self\.home, result\.endpoint\)/)
+})
