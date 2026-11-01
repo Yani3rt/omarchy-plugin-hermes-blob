@@ -189,3 +189,38 @@ test('the bridge never puts prompt or reply text on its command line or stderr',
   assert.match(source, /input_id=uuid\.uuid4\(\)\.hex, text=NOTE \+ "\\n\\n" \+ text/)
   assert.match(source, /asyncio\.to_thread\(_session_ticket, self\.home, result\.endpoint\)/)
 })
+
+test('approvals and questions are answered from bubble buttons or the composer', () => {
+  const main = fs.readFileSync(path.join(root, 'Main.qml'), 'utf8')
+  const panel = fs.readFileSync(path.join(root, 'BubblePanel.qml'), 'utf8')
+  // One button per choice the gateway offers; the answer goes back through the bridge only.
+  assert.match(main, /approvalLabels: \(\{ once: "Allow once", session: "Allow this session", always: "Always allow", deny: "Deny" \}\)/)
+  assert.match(main, /links\.push\(\{ label: root\.approvalLabels\[choice\][^}]*action: "respond"/)
+  assert.match(main, /message\[link\.action === "respond" \? "choice" : "answer"\] = link\.value\n\s*if \(!root\.bridgeSend\(message\)\) return/)
+  assert.match(panel, /onActivated: app\.linkAction\(modelData\)/)
+  // Answered anywhere (or timed out): the buttons go, wherever the message now sits.
+  assert.match(main, /ev\.ev === "settled"\) \{\n\s*root\.dropPromptLinks\(String\(ev\.promptId \|\| ""\), ""\)/)
+  // Typed text answers an open question instead of starting an ask or stopping one.
+  assert.match(qmlFunction(main, 'submitPrompt'), /if \(root\.answerFromComposer\(prompt\)\) return/)
+  assert.match(panel, /readonly property bool asking: app \? app\.askingHere && !answering : false/)
+  assert.match(panel, /placeholderText: app\.clarifyHere \? "Type your answer…"/)
+  // Compact: Desktop's /compact, offered only for an attached Hermes bot that is not mid-ask.
+  assert.match(main, /readonly property bool canCompact: root\.bridgeUsable\(root\.threadBotId\) && !root\.askingHere/)
+  assert.match(main, /root\.canCompact \? \[\{ "label": "Compact conversation", "action": "compact" \}\]/)
+  for (const file of ['qml/CompanionShellIpc.qml', 'qml/CompanionIpcHandler.qml']) {
+    const ipc = fs.readFileSync(path.join(root, file), 'utf8')
+    assert.match(ipc, /function compact\(\): string \{ return host\.compactConversation\(\) \}/)
+    assert.match(ipc, /function answer\(promptId: string, value: string\): string \{ return host\.answerPrompt\(promptId, value\) \}/)
+  }
+})
+
+function qmlFunction(source, name) {
+  const start = source.indexOf(`function ${name}(`)
+  assert.ok(start >= 0, `missing function ${name}`)
+  let depth = 0
+  for (let i = source.indexOf('{', start); i < source.length; i++) {
+    if (source[i] === '{') depth++
+    else if (source[i] === '}' && --depth === 0) return source.slice(start, i + 1)
+  }
+  return source.slice(start)
+}

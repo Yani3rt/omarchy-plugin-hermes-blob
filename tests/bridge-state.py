@@ -79,11 +79,35 @@ class BotStateTest(unittest.TestCase):
         self.state.handle(frame("session.info", execution_generation=13))
         self.assertEqual(self.state.generation, 13)
 
-    def test_approval_and_clarify_requests_are_forwarded(self):
-        self.state.handle(frame("approval.request", "A", prompt_id="p1", description="rm -rf build"))
-        self.assertEqual(self.out[-1]["ev"], "prompt")
-        self.assertEqual(self.out[-1]["kind"], "approval")
-        self.assertEqual(self.out[-1]["text"], "rm -rf build")
+    def test_approval_requests_carry_their_command_and_choices(self):
+        self.state.mine["A"] = "ask1"
+        self.state.handle(frame("approval.request", "A", prompt_id="p1", description="recursive delete",
+                                command="rm -rf build", choices=["once", "deny", "session"], execution_generation=4))
+        self.assertEqual(self.out[-1], {"ev": "prompt", "bot": "donna", "promptId": "p1", "kind": "approval",
+                                        "choices": ["once", "deny", "session"], "multiSelect": False,
+                                        "askId": "ask1", "text": "recursive delete", "command": "rm -rf build"})
+        self.assertEqual(self.state.prompts["p1"], {"kind": "approval", "generation": 4})
+
+    def test_clarify_requests_without_an_admission_still_reach_the_shell(self):
+        self.state.handle(frame("clarify.request", prompt_id="q1", question="Red or blue?",
+                                choices=["red", "blue"], multi_select=False))
+        self.assertEqual(self.out[-1]["kind"], "clarify")
+        self.assertEqual(self.out[-1]["text"], "Red or blue?")
+        self.assertEqual(self.out[-1]["choices"], ["red", "blue"])
+
+    def test_a_prompt_answered_anywhere_is_settled_once(self):
+        self.state.handle(frame("approval.request", "A", prompt_id="p1", description="x", choices=["once"]))
+        self.state.handle(frame("approval.settled", prompt_id="p1"))
+        self.state.handle(frame("approval.settled", prompt_id="p1"))
+        self.assertEqual([e["ev"] for e in self.out], ["prompt", "settled"])
+        self.assertEqual(self.state.prompts, {})
+
+    def test_attaching_replays_open_prompts_and_drops_stale_ones(self):
+        self.state.handle(frame("approval.request", "A", prompt_id="old", description="x", choices=["once"]))
+        self.state.attached({"prompts": [{"kind": "clarify", "prompt_id": "q2", "question": "Which?",
+                                          "choices": [], "execution_generation": 7}]})
+        self.assertEqual([(e["ev"], e["promptId"]) for e in self.out[1:]], [("settled", "old"), ("prompt", "q2")])
+        self.assertEqual(self.state.prompts["q2"]["generation"], 7)
 
 
 class RosterTest(unittest.TestCase):

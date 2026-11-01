@@ -20,6 +20,9 @@ never prompt or reply text.
 
   shell -> bridge   {"op": "ask", "askId", "bot", "text"}
                     {"op": "stop", "bot"}
+                    {"op": "respond", "bot", "promptId", "choice"}   approve / deny
+                    {"op": "answer", "bot", "promptId", "answer"}    clarify
+                    {"op": "compact", "bot"}               like Desktop's /compact
                     {"op": "reload"}                       re-read the roster
   bridge -> shell   {"ev": "ready"}
                     {"ev": "status", "bot", "state": "up"|"down", "detail"?}
@@ -27,7 +30,11 @@ never prompt or reply text.
                     {"ev": "progress", "bot", "askId"?, "text"}
                     {"ev": "complete", "bot", "askId"?, "text", "status"}
                     {"ev": "error", "bot", "askId", "text", "code"}
-                    {"ev": "prompt", "bot", "askId"?, "promptId", "kind", "text"}
+                    {"ev": "prompt", "bot", "askId"?, "promptId", "kind", "text",
+                     "command"?, "choices", "multiSelect"}
+                    {"ev": "settled", "bot", "promptId"}         answered anywhere
+                    {"ev": "responded", "bot", "promptId", "ok", "text"?}
+                    {"ev": "compacted", "bot", "ok", "text"}
 """
 from __future__ import annotations
 
@@ -139,6 +146,44 @@ class BotState:
         self.streams: dict[str, str] = {}     # admission id -> text so far
         self.held: list[dict] = []            # events seen while a submit's receipt is in flight
         self.submitting = 0
+        self.prompts: dict[str, dict] = {}    # open approvals / questions by prompt id
+        self.asks_by_prompt: dict[str, str] = {}
+
+    def prompt(self, payload: dict, ask=None) -> None:
+        """An approval or clarifying question the gateway is waiting on."""
+        prompt_id = str(payload.get("prompt_id") or "")
+        if not prompt_id:
+            return
+        kind = "clarify" if payload.get("kind") == "clarify" or "question" in payload else "approval"
+        self.prompts[prompt_id] = {"kind": kind, "generation": payload.get("execution_generation", self.generation)}
+        extra = {"askId": ask} if ask else {}
+        if ask:
+            self.asks_by_prompt[prompt_id] = ask
+        choices = [str(c)[:120] for c in (payload.get("choices") or []) if str(c).strip()][:8]
+        event = dict(ev="prompt", bot=self.bot, promptId=prompt_id, kind=kind, choices=choices,
+                     multiSelect=bool(payload.get("multi_select")), **extra)
+        if kind == "approval":
+            event["text"] = clip(payload.get("description") or "Run this command?")
+            if payload.get("command"):
+                event["command"] = clip(payload.get("command"))[:2000]
+        else:
+            event["text"] = clip(payload.get("question") or "")
+        self.emit(**event)
+
+    def settled(self, prompt_id: str) -> None:
+        if self.prompts.pop(prompt_id, None) is not None:
+            self.asks_by_prompt.pop(prompt_id, None)
+            self.emit(ev="settled", bot=self.bot, promptId=prompt_id)
+
+    def attached(self, snapshot: dict) -> None:
+        """Prompts already open when this viewer attached are shown too; stale ones are dropped."""
+        open_now = {str(p.get("prompt_id")): p for p in snapshot.get("prompts") or [] if isinstance(p, dict)}
+        for prompt_id in list(self.prompts):
+            if prompt_id not in open_now:
+                self.settled(prompt_id)
+        for prompt_id, payload in open_now.items():
+            if prompt_id not in self.prompts:
+                self.prompt(payload)
 
     def own(self, admission: str, ask_id: str) -> None:
         """A submit's receipt arrived: replay what the owner published before it."""
@@ -168,7 +213,13 @@ class BotState:
             if isinstance(payload.get("execution_generation"), int):
                 self.generation = payload["execution_generation"]
             return True
+        if kind in ("approval.settled", "clarify.settled"):
+            self.settled(str(payload.get("prompt_id") or ""))
+            return True
         admission = params.get("admission_id") or payload.get("admission_id") or ""
+        if not admission and kind in ("approval.request", "clarify.request"):
+            self.prompt({**payload, "kind": "clarify" if kind == "clarify.request" else "approval"})
+            return True
         if not admission:
             return True
         if admission not in self.mine and self.submitting:
@@ -189,10 +240,7 @@ class BotState:
             self.streams[admission] = ""
             self.emit(ev="progress", bot=self.bot, text=f"Using {name}…", **extra)
         elif kind in ("approval.request", "clarify.request"):
-            self.emit(ev="prompt", bot=self.bot, promptId=str(payload.get("prompt_id") or ""),
-                      kind="approval" if kind == "approval.request" else "clarify",
-                      text=clip(payload.get("description") or payload.get("question") or payload.get("command") or ""),
-                      **extra)
+            self.prompt({**payload, "kind": "clarify" if kind == "clarify.request" else "approval"}, ask)
         elif kind == "message.complete":
             text = payload.get("text") or payload.get("content") or self.streams.get(admission, "")
             self.streams.pop(admission, None)
@@ -264,6 +312,7 @@ class BotLink:
                 self.state.session_id = snapshot.get("stored_session_id") or session_id
                 self.state.generation = snapshot.get("execution_generation") or 0
                 self.client = client
+                self.state.attached(snapshot)
                 self.up.set()
                 self.bridge.emit(ev="status", bot=self.bot, state="up")
                 while True:
@@ -295,6 +344,44 @@ class BotLink:
                              text="Hermes did not accept the ask.")
             return
         self.state.own(admission, ask_id)
+
+    async def respond(self, prompt_id: str, value: str, kind: str) -> None:
+        client = self.client
+        prompt = self.state.prompts.get(prompt_id)
+        if client is None or prompt is None or prompt["kind"] != kind:
+            self.bridge.emit(ev="responded", bot=self.bot, promptId=prompt_id, ok=False,
+                             text="That request is no longer waiting.")
+            return
+        field = {"choice": value} if kind == "approval" else {"answer": value}
+        try:
+            await client.rpc(f"{kind}.respond", session_id=self.state.session_id,
+                             execution_generation=prompt["generation"], prompt_id=prompt_id, **field)
+        except Exception as exc:
+            self.bridge.emit(ev="responded", bot=self.bot, promptId=prompt_id, ok=False,
+                             text=f"Hermes didn't take the answer ({str(exc)[:80]}).")
+            return
+        self.bridge.emit(ev="responded", bot=self.bot, promptId=prompt_id, ok=True)
+        self.state.settled(prompt_id)
+
+    async def compact(self) -> None:
+        client = self.client
+        if client is None:
+            self.bridge.emit(ev="compacted", bot=self.bot, ok=False, text="Not connected to Hermes yet.")
+            return
+        from hermes_cli.gateway_mutations import PreparedMutations
+        try:
+            result = await PreparedMutations().apply(client, self.state.session_id, "compress", {})
+        except Exception as exc:
+            reason = str(exc)[:80]
+            text = ("Nothing to compact yet." if reason == "nothing_to_compress" else
+                    "It's busy; compact when the current turn ends." if reason == "session_busy" else
+                    f"Compacting failed ({reason}).")
+            self.bridge.emit(ev="compacted", bot=self.bot, ok=False, text=text)
+            return
+        status = str((result or {}).get("status") or "done")
+        self.bridge.emit(ev="compacted", bot=self.bot, ok=status not in ("nothing", "cancelled"),
+                         text="Conversation compacted: same chat, fresh working context." if status not in
+                         ("nothing", "cancelled") else "Nothing to compact yet.")
 
     async def stop(self) -> None:
         client = self.client
@@ -348,6 +435,14 @@ class Bridge:
             asyncio.create_task(link.ask(ask_id, text[:TEXT_LIMIT]))
         elif op == "stop" and link is not None:
             asyncio.create_task(link.stop())
+        elif op in ("respond", "answer") and link is not None:
+            prompt_id = str(msg.get("promptId") or "")[:128]
+            value = str(msg.get("choice" if op == "respond" else "answer") or "").replace("\x00", "").strip()
+            if prompt_id and value:
+                asyncio.create_task(link.respond(prompt_id, value[:TEXT_LIMIT],
+                                                 "approval" if op == "respond" else "clarify"))
+        elif op == "compact" and link is not None:
+            asyncio.create_task(link.compact())
 
     async def run(self) -> None:
         self.sync_links()

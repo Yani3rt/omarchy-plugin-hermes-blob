@@ -391,6 +391,118 @@ Item {
   property var bridgeUp: ({})
   property string bridgeAskId: ""
   property int bridgeFailures: 0
+  // Open clarifying questions by bot: the composer answers them while one waits.
+  property var clarifyWaiting: ({})
+  readonly property bool clarifyHere: root.clarifyWaiting[root.threadBotId] !== undefined
+  readonly property bool canCompact: root.bridgeUsable(root.threadBotId) && !root.askingHere
+
+  readonly property var approvalLabels: ({ once: "Allow once", session: "Allow this session", always: "Always allow", deny: "Deny" })
+
+  // An approval or question from a bot, as a message with one button per answer.
+  function showPrompt(ev, mine) {
+    var bot = String(ev.bot || "")
+    var promptId = String(ev.promptId || "")
+    if (bot === "" || promptId === "" || !root.findBot(bot)) return
+    var text = root.cleanText(ev.text, 3000)
+    var links = []
+    var choices = Array.isArray(ev.choices) ? ev.choices : []
+    var i
+    if (ev.kind === "approval") {
+      var command = root.cleanText(ev.command, 1200)
+      text = "Needs your approval: " + (text || "run a command") + (command !== "" && command !== text ? "\n\n" + command : "")
+      for (i = 0; i < choices.length; i++) {
+        var choice = String(choices[i])
+        links.push({ label: root.approvalLabels[choice] || root.plainLine(choice, 24), action: "respond", bot: bot, promptId: promptId, value: choice })
+      }
+    } else {
+      for (i = 0; i < choices.length; i++)
+        links.push({ label: root.plainLine(choices[i], 24), action: "answer", bot: bot, promptId: promptId, value: String(choices[i]) })
+      text = text + (choices.length > 0 ? "\n\nPick one, or type your answer." : "\n\nType your answer below.")
+      var waiting = Object.assign({}, root.clarifyWaiting)
+      waiting[bot] = promptId
+      root.clarifyWaiting = waiting
+    }
+    if (mine && root.asking && bot === root.askBotId && bot === root.threadBotId) {
+      root.bubbleBody = text
+      root.noticeLinks = links
+    } else {
+      root.appendReply(bot, text, links)
+    }
+    root.flashExpression("alert", 1200)
+    if (!root.bubbleOpen) root.replyUnread = true
+  }
+
+  // Removes a prompt's buttons wherever its message now sits, noting the answer under it.
+  function dropPromptLinks(promptId, note) {
+    function strip(links) { return (links || []).filter(function (link) { return link.promptId !== promptId }) }
+    function had(links) { return (links || []).some(function (link) { return link.promptId === promptId }) }
+    function mark(body) { return note ? String(body || "") + "\n\n" + note : body }
+    if (had(root.noticeLinks)) {
+      root.bubbleBody = mark(root.bubbleBody)
+      root.noticeLinks = strip(root.noticeLinks)
+    }
+    root.history = root.history.map(function (item) {
+      return had(item.links) ? Object.assign({}, item, { body: mark(item.body), links: strip(item.links) }) : item
+    })
+    var threads = Object.assign({}, root.threads)
+    Object.keys(threads).forEach(function (id) {
+      var thread = threads[id]
+      if (!thread) return
+      var next = Object.assign({}, thread)
+      if (had(thread.links)) {
+        next.body = mark(thread.body)
+        next.links = strip(thread.links)
+      }
+      next.history = (thread.history || []).map(function (item) {
+        return had(item.links) ? Object.assign({}, item, { body: mark(item.body), links: strip(item.links) }) : item
+      })
+      threads[id] = next
+    })
+    root.threads = threads
+    var waiting = Object.assign({}, root.clarifyWaiting)
+    Object.keys(waiting).forEach(function (bot) { if (waiting[bot] === promptId) delete waiting[bot] })
+    root.clarifyWaiting = waiting
+  }
+
+  // A button on a bot's message: a link opens; an answer goes back through the bridge.
+  function linkAction(link) {
+    if (!link) return
+    if (link.action !== "respond" && link.action !== "answer") {
+      root.openLink(link.url)
+      return
+    }
+    var message = { op: link.action, bot: link.bot, promptId: link.promptId }
+    message[link.action === "respond" ? "choice" : "answer"] = link.value
+    if (!root.bridgeSend(message)) return
+    root.dropPromptLinks(link.promptId, "→ " + link.label)
+  }
+
+  function answerPrompt(promptId, value) {
+    var bot = ""
+    Object.keys(root.clarifyWaiting).forEach(function (id) { if (root.clarifyWaiting[id] === promptId) bot = id })
+    var kind = bot !== "" ? "answer" : "respond"
+    if (bot === "") bot = root.threadBotId
+    var message = { op: kind, bot: bot, promptId: String(promptId || "") }
+    message[kind === "respond" ? "choice" : "answer"] = String(value || "")
+    if (!root.bridgeSend(message)) return "no bridge"
+    root.dropPromptLinks(String(promptId || ""), "→ " + root.plainLine(value, 80))
+    return "ok"
+  }
+
+  // Typed text answers the question this bot is waiting on, even while its ask runs.
+  function answerFromComposer(prompt) {
+    if (prompt === "" || !root.clarifyHere || root.pendingFiles.length > 0) return false
+    if (root.answerPrompt(root.clarifyWaiting[root.threadBotId], prompt) !== "ok") return false
+    root.promptDraft = ""
+    return true
+  }
+
+  function compactConversation() {
+    if (!root.canCompact) return "unavailable"
+    root.bridgeSend({ op: "compact", bot: root.threadBotId })
+    root.appendReply(root.threadBotId, "Compacting the conversation…", [])
+    return "ok"
+  }
 
   function bridgeSend(message) {
     if (!bridgeProc.running) return false
@@ -450,7 +562,9 @@ Item {
       viaBridge: root.bridgeAskId !== "",
       unread: root.unreadBots,
       bridge: { mode: root.hermesMode, running: bridgeProc.running, ready: root.bridgeReady, up: root.bridgeUp },
-      body: String(root.bubbleBody || "").slice(0, 300)
+      body: String(root.bubbleBody || "").slice(0, 300),
+      buttons: root.noticeLinks.map(function (link) { return { label: link.label, promptId: link.promptId || "" } }),
+      clarify: root.clarifyWaiting
     })
   }
 
@@ -500,10 +614,14 @@ Item {
       }
       root.finishBridgeAsk("", text)
     } else if (ev.ev === "prompt") {
-      var where = "Answer it in Hermes Desktop or the TUI."
-      var ask = (ev.kind === "approval" ? "Needs your approval: " : "Has a question: ") + text + " " + where
-      if (mine && root.asking) root.deliver(root.askBotId, ask)
-      else if (text !== "") root.receiveReply(bot, ask)
+      root.showPrompt(ev, mine)
+    } else if (ev.ev === "settled") {
+      root.dropPromptLinks(String(ev.promptId || ""), "")
+    } else if (ev.ev === "responded") {
+      if (ev.ok !== true && text !== "") root.appendReply(bot, text, [])
+    } else if (ev.ev === "compacted") {
+      if (bot === root.threadBotId && root.bubbleBody === "Compacting the conversation…") root.bubbleBody = text
+      else root.appendReply(bot, text, [])
     }
   }
 
@@ -1457,6 +1575,7 @@ Item {
     var prompt = root.plainPrompt(value, 4000)
     // Attachments can go on their own, as in a chat app.
     if (prompt === "" && root.pendingFiles.length > 0) prompt = "Have a look at this."
+    if (root.answerFromComposer(prompt)) return
     if (prompt === "" || root.asking) return
     var route = Dictation.route(prompt, root.bots, root.defaultBotId)
     if (route.matched) {
@@ -2352,7 +2471,8 @@ Item {
         width: parent.width - 16
         spacing: 4
         Repeater {
-          model: (root.canClear ? [{ "label": "Clear conversation", "action": "clear" }] : []).concat([
+          model: (root.canClear ? [{ "label": "Clear conversation", "action": "clear" }] : [])
+            .concat(root.canCompact ? [{ "label": "Compact conversation", "action": "compact" }] : []).concat([
             { "label": "Appearance & bots", "action": "settings" },
             { "label": "Hide companion", "action": "hide" }
           ])
@@ -2379,6 +2499,9 @@ Item {
                 if (modelData.action === "clear") {
                   root.menuOpen = false
                   root.clearConversation()
+                } else if (modelData.action === "compact") {
+                  root.menuOpen = false
+                  root.compactConversation()
                 } else if (modelData.action === "settings") root.openSettings()
                 else {
                   root.hideCompanion()

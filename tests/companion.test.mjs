@@ -1641,7 +1641,7 @@ test('each bot keeps its own conversation, and a reply lands with the bot asked'
   assert.match(main, /readonly property bool askingHere: root\.asking && root\.askBotId === root\.threadBotId/)
   assert.match(main, /property real workBlend: root\.busyHere && !root\.reduceMotion/)
   const panel = read('BubblePanel.qml')
-  assert.match(panel, /readonly property bool asking: app \? app\.askingHere : false/)
+  assert.match(panel, /readonly property bool asking: app \? app\.askingHere && !answering : false/)
   assert.match(panel, /"Waiting for " \+ app\.askingLabel\(\) \+ " to answer…"/)
   assert.equal((panel.match(/visible: app\.unreadBots\.indexOf\(modelData\.id\) >= 0/g) || []).length, 2)
   assert.match(panel, /opacity: mode === "send" && app && app\.asking && !app\.askingHere \? 0\.45 : 1/)
