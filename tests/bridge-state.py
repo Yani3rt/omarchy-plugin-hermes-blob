@@ -65,7 +65,7 @@ class BotStateTest(unittest.TestCase):
         self.state.handle(frame("tool.start", "A", tool_name="message_agent"))
         self.state.handle(frame("message.delta", "A", text="Asked."))
         self.state.handle(frame("message.complete", "A"))
-        self.assertIn({"ev": "progress", "bot": "donna", "text": "Using message_agent…", "askId": "ask1"}, self.out)
+        self.assertIn({"ev": "progress", "bot": "donna", "text": "Messaging a teammate…", "askId": "ask1"}, self.out)
         self.assertEqual(self.out[-1]["text"], "Asked.")
 
     def test_other_sessions_are_ignored_and_a_replay_gap_asks_to_reattach(self):
@@ -106,8 +106,56 @@ class BotStateTest(unittest.TestCase):
         self.state.handle(frame("approval.request", "A", prompt_id="old", description="x", choices=["once"]))
         self.state.attached({"prompts": [{"kind": "clarify", "prompt_id": "q2", "question": "Which?",
                                           "choices": [], "execution_generation": 7}]})
-        self.assertEqual([(e["ev"], e["promptId"]) for e in self.out[1:]], [("settled", "old"), ("prompt", "q2")])
+        self.assertEqual([(e["ev"], e.get("promptId")) for e in self.out[1:]],
+                         [("history", None), ("settled", "old"), ("prompt", "q2")])
         self.assertEqual(self.state.prompts["q2"]["generation"], 7)
+
+
+class HistoryAndProgressTest(unittest.TestCase):
+    def test_history_keeps_questions_and_final_replies_only(self):
+        rows = [
+            {"role": "user", "content": bridge.NOTE + "\n\nq1"},
+            {"role": "assistant", "content": "", "tool_calls": [{}]},
+            {"role": "tool", "content": "{}"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "[IMPORTANT: background]", "display_kind": "process_complete"},
+            {"role": "assistant", "content": "The job finished."},
+            {"role": "user", "content": "Message from \U0001f916 Sentinel (@sentinel): ack"},
+            {"role": "assistant", "content": "Got it."},
+            {"role": "user", "content": "q4"},
+            {"role": "assistant", "content": "[SILENT]"},
+        ]
+        self.assertEqual(bridge.history_items(rows), [
+            {"asked": "q1", "body": "a1"},
+            {"asked": "", "body": "The job finished."},
+            {"asked": "From Sentinel: ack", "body": "Got it."},
+        ])
+        many = [r for i in range(30) for r in ({"role": "user", "content": f"q{i}"}, {"role": "assistant", "content": f"a{i}"})]
+        self.assertEqual(bridge.history_items(many)[0], {"asked": "q10", "body": "a10"})
+
+    def test_progress_names_what_the_bot_is_doing(self):
+        self.assertEqual(bridge.tool_label({"tool_name": "message_agent", "args": {"target": "@sentinel"}}), "Messaging sentinel…")
+        self.assertEqual(bridge.tool_label({"tool_name": "terminal"}), "Running a command…")
+        self.assertEqual(bridge.tool_label({"tool_name": "mnemosyne_recall"}), "Checking memory…")
+        self.assertEqual(bridge.tool_label({"tool_name": "odd"}), "Using odd…")
+
+    def test_a_turn_started_elsewhere_completes_with_its_question(self):
+        out = []
+        state = bridge.BotState("donna", lambda **ev: out.append(ev))
+        state.session_id = "S1"
+        state.handle(frame("session.info", pending=[{"admission_id": "D", "text": "from desktop"}]))
+        state.handle(frame("thinking.delta", "D", text="(◇) on it"))
+        state.handle(frame("message.delta", "D", text="Here you go."))
+        state.handle(frame("message.complete", "D"))
+        self.assertEqual(out[0], {"ev": "progress", "bot": "donna", "text": "(◇) on it"})
+        self.assertEqual(out[-1], {"ev": "complete", "bot": "donna", "text": "Here you go.", "status": "complete",
+                                   "asked": "from desktop"})
+
+    def test_attaching_sends_history_first(self):
+        out = []
+        state = bridge.BotState("donna", lambda **ev: out.append(ev))
+        state.attached({"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]})
+        self.assertEqual(out[0], {"ev": "history", "bot": "donna", "items": [{"asked": "hi", "body": "hello"}]})
 
 
 class RosterTest(unittest.TestCase):

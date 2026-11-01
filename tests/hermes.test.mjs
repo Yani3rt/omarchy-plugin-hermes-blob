@@ -177,7 +177,7 @@ test('Hermes mode keeps a bridge on stdin/stdout and falls back to the command l
   assert.match(main, /if \(ev\.code === "unavailable" && root\.asking\) \{[^}]*root\.startProcessAsk\(\)/)
   // Stop interrupts inside the gateway; a turn nobody here asked for lands as that bot's reply.
   assert.match(main, /root\.bridgeSend\(\{ op: "stop", bot: root\.askBotId \}\)/)
-  assert.match(main, /else if \(ev\.askId === undefined && text !== ""\) root\.receiveReply\(bot, text\)/)
+  assert.match(main, /else if \(ev\.askId === undefined && text !== ""\) \{[\s\S]*?if \(askProc\.running && bot === root\.askBotId\) return[\s\S]*?else root\.receiveReply\(bot, text\)/)
   for (const file of ['qml/CompanionShellIpc.qml', 'qml/CompanionIpcHandler.qml']) {
     assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /function status\(\): string \{ return host\.statusJson\(\) \}/)
   }
@@ -224,3 +224,19 @@ function qmlFunction(source, name) {
   }
   return source.slice(start)
 }
+
+test('the bubble opens on each bot\'s recent Bot Chat and shows what it is doing', () => {
+  const main = fs.readFileSync(path.join(root, 'Main.qml'), 'utf8')
+  const panel = fs.readFileSync(path.join(root, 'BubblePanel.qml'), 'utf8')
+  // History fills a conversation only while it is empty here, so a reconnect never duplicates it.
+  const apply = qmlFunction(main, 'applyHistory')
+  assert.match(apply, /if \(root\.history\.length > 0 \|\| root\.askedText !== "" \|\| root\.bubbleBody !== "" \|\| root\.asking\) return/)
+  assert.match(apply, /list = list\.slice\(-root\.historyLimit\)/)
+  // Progress is a faint line under the reply, not a replacement for it, and ends with the ask.
+  assert.match(main, /ev\.ev === "progress"\) \{\n\s*if \(mine && root\.asking\) root\.progressText = root\.plainLine\(ev\.text, 80\)/)
+  assert.match(qmlFunction(main, 'finishBridgeAsk'), /root\.progressText = ""/)
+  assert.match(qmlFunction(main, 'cancelAsk'), /root\.progressText = ""/)
+  assert.match(panel, /status: app && app\.askingHere \? app\.progressText : ""/)
+  // A turn from another surface lands with the question that started it.
+  assert.match(main, /if \(asked !== ""\) root\.landReply\(root\.appendReply\(bot, text, \[\], asked\)\)/)
+})

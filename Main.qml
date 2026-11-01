@@ -391,6 +391,33 @@ Item {
   property var bridgeUp: ({})
   property string bridgeAskId: ""
   property int bridgeFailures: 0
+  // What the bot on an ask is doing right now ("Running a command…"), under the typing dots.
+  property string progressText: ""
+
+  // A bot's recent Bot Chat, loaded once into a conversation that is still empty here, so
+  // the bubble opens where the conversation is, whichever surface it last happened on.
+  function applyHistory(botId, items) {
+    if (!root.findBot(botId) || !Array.isArray(items) || items.length === 0) return
+    var list = []
+    var i
+    for (i = 0; i < items.length; i++) {
+      var body = root.cleanText(items[i].body, 4000)
+      if (body === "") continue
+      list.push({ asked: root.cleanText(items[i].asked, 4000), files: [], body: body, links: [], wait: "" })
+    }
+    list = list.slice(-root.historyLimit)
+    if (list.length === 0) return
+    if (botId === root.threadBotId) {
+      if (root.history.length > 0 || root.askedText !== "" || root.bubbleBody !== "" || root.asking) return
+      root.history = list
+      return
+    }
+    var thread = root.threads[botId]
+    if (thread && ((thread.history || []).length > 0 || (thread.asked || "") !== "" || (thread.body || "") !== "")) return
+    var next = Object.assign({}, root.threads)
+    next[botId] = Object.assign({}, thread || {}, { history: list })
+    root.threads = next
+  }
   // Open clarifying questions by bot: the composer answers them while one waits.
   property var clarifyWaiting: ({})
   readonly property bool clarifyHere: root.clarifyWaiting[root.threadBotId] !== undefined
@@ -564,12 +591,16 @@ Item {
       bridge: { mode: root.hermesMode, running: bridgeProc.running, ready: root.bridgeReady, up: root.bridgeUp },
       body: String(root.bubbleBody || "").slice(0, 300),
       buttons: root.noticeLinks.map(function (link) { return { label: link.label, promptId: link.promptId || "" } }),
-      clarify: root.clarifyWaiting
+      clarify: root.clarifyWaiting,
+      progress: root.progressText,
+      history: root.history.length,
+      asked: String(root.askedText || "").slice(0, 120)
     })
   }
 
   function finishBridgeAsk(text, failure) {
     root.bridgeAskId = ""
+    root.progressText = ""
     askTimeout.stop()
     if (!root.asking) return
     root.asking = false
@@ -598,12 +629,25 @@ Item {
       var up = Object.assign({}, root.bridgeUp)
       up[bot] = ev.state === "up"
       root.bridgeUp = up
-    } else if (ev.ev === "delta" || ev.ev === "progress") {
+    } else if (ev.ev === "delta") {
       // Live text for the ask on screen; other turns land whole, on completion.
-      if (mine && root.asking && text !== "") root.deliver(root.askBotId, text)
+      if (mine && root.asking && text !== "") {
+        root.progressText = ""
+        root.deliver(root.askBotId, text)
+      }
+    } else if (ev.ev === "progress") {
+      if (mine && root.asking) root.progressText = root.plainLine(ev.text, 80)
+    } else if (ev.ev === "history") {
+      root.applyHistory(bot, ev.items)
     } else if (ev.ev === "complete") {
       if (mine) root.finishBridgeAsk(text, "")
-      else if (ev.askId === undefined && text !== "") root.receiveReply(bot, text)
+      else if (ev.askId === undefined && text !== "") {
+        // The command-line fallback's own turn: its process delivers the reply itself.
+        if (askProc.running && bot === root.askBotId) return
+        var asked = root.cleanText(ev.asked, 4000)
+        if (asked !== "") root.landReply(root.appendReply(bot, text, [], asked))
+        else root.receiveReply(bot, text)
+      }
     } else if (ev.ev === "error") {
       if (!mine) return
       root.bridgeAskId = ""
@@ -1376,9 +1420,10 @@ Item {
 
   // An answer that belongs to no waiting question still lands in its bot's
   // conversation, as a new exchange. Returns whether it is on screen.
-  function appendReply(botId, text, links) {
+  function appendReply(botId, text, links, asked) {
     if (botId === root.threadBotId) {
       root.archiveExchange()
+      root.askedText = asked || ""
       root.noticeLinks = links || []
       root.bubbleBody = text
       return true
@@ -1389,7 +1434,7 @@ Item {
     if ((thread.asked || "") !== "" || (thread.body || "") !== "" || (thread.links || []).length > 0)
       past = past.concat([{ asked: thread.asked || "", files: thread.files || [], body: thread.body || "", links: thread.links || [], wait: thread.wait || "" }]).slice(-root.historyLimit)
     thread.history = past
-    thread.asked = ""
+    thread.asked = asked || ""
     thread.files = []
     thread.links = links || []
     thread.wait = ""
@@ -1805,6 +1850,7 @@ Item {
 
   function cancelAsk() {
     askTimeout.stop()
+    root.progressText = ""
     if (root.bridgeAskId !== "") {
       root.bridgeSend({ op: "stop", bot: root.askBotId })
       root.bridgeAskId = ""

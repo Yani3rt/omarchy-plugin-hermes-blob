@@ -35,6 +35,9 @@ never prompt or reply text.
                     {"ev": "settled", "bot", "promptId"}         answered anywhere
                     {"ev": "responded", "bot", "promptId", "ok", "text"?}
                     {"ev": "compacted", "bot", "ok", "text"}
+                    {"ev": "history", "bot", "items": [{"asked", "body"}]}  on attach
+  A "complete" for a turn started elsewhere (Desktop, Telegram, a teammate) carries
+  "asked" when the question is known.
 """
 from __future__ import annotations
 
@@ -54,6 +57,76 @@ TEXT_LIMIT = 16000
 # Same note the CLI path prepends; it is stored with the turn, so it stays short.
 NOTE = "[via Omarchy desktop bubble: plain text only, a few short sentences]"
 RETRY_MIN, RETRY_MAX = 2.0, 30.0
+HISTORY_EXCHANGES = 20
+SILENCE = re.compile(r"^\s*\[?(SILENT|NO_REPLY|NO REPLY)\]?\s*$", re.I)
+# Rows Hermes itself marks as plumbing: never shown as something you asked.
+HIDDEN_KINDS = {"process_complete", "internal_notification", "hidden", "compaction", "delivery"}
+TOOL_LABELS = {
+    "terminal": "Running a command", "process": "Checking a command", "execute_code": "Running code",
+    "web_search": "Searching the web", "web_extract": "Reading a web page", "browser_exec": "Using the browser",
+    "read_file": "Reading a file", "write_file": "Writing a file", "patch": "Editing a file",
+    "search_files": "Searching files", "delegate_task": "Handing off to a helper",
+    "clarify": "Asking you", "memory": "Checking memory", "skill_view": "Loading a skill",
+    "skill_manage": "Updating a skill", "vision_analyze": "Looking at an image", "todo": "Planning",
+    "cronjob": "Scheduling", "send_message": "Sending a message", "text_to_speech": "Recording audio",
+}
+
+
+TEAMMATE = re.compile(r"^Message from \S+ (.+?) \(@[^)]+\):\s*", re.S)
+
+
+def strip_note(text: str) -> str:
+    """What was asked, as the bubble shows it: without the companion's own note, and a
+    teammate's DM labelled as theirs rather than looking like something you typed."""
+    text = str(text or "")
+    if text.startswith(NOTE):
+        text = text[len(NOTE):]
+    text = text.strip()
+    match = TEAMMATE.match(text)
+    if match:
+        text = f"From {match.group(1)}: " + text[match.end():]
+    return text
+
+
+def tool_label(payload: dict) -> str:
+    name = str(payload.get("tool_name") or payload.get("name") or "")
+    args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+    if name == "message_agent":
+        target = str(args.get("target") or "").lstrip("@")[:40]
+        return f"Messaging {target}…" if target else "Messaging a teammate…"
+    if name.startswith("browser"):
+        return "Using the browser…"
+    if name.startswith("mnemosyne") or name.startswith("memory"):
+        return "Checking memory…"
+    label = TOOL_LABELS.get(name)
+    return f"{label}…" if label else (f"Using {name[:48]}…" if name else "Working…")
+
+
+def history_items(messages, limit=HISTORY_EXCHANGES) -> list[dict]:
+    """The Bot Chat as the bubble shows it: what was asked and the final reply, oldest first.
+
+    Tool rows, tool-call scaffolding and empty or silent replies are dropped; a turn Hermes
+    started itself (a background result, a teammate's delivery) shows as the bot speaking."""
+    items: list[dict] = []
+    current = None
+    for row in messages or []:
+        if not isinstance(row, dict):
+            continue
+        role, content = row.get("role"), row.get("content")
+        if not isinstance(content, str):
+            continue
+        if role == "user":
+            if current and current["body"]:
+                items.append(current)
+            asked = "" if row.get("display_kind") in HIDDEN_KINDS else strip_note(content)
+            current = {"asked": clip(asked)[:4000], "body": ""}
+        elif role == "assistant" and content.strip() and not SILENCE.match(content):
+            if current is None:
+                current = {"asked": "", "body": ""}
+            current["body"] = clip(content).strip()[:4000]
+    if current and current["body"]:
+        items.append(current)
+    return items[-limit:]
 
 
 def config_dir() -> Path:
@@ -146,6 +219,7 @@ class BotState:
         self.streams: dict[str, str] = {}     # admission id -> text so far
         self.held: list[dict] = []            # events seen while a submit's receipt is in flight
         self.submitting = 0
+        self.asked: dict[str, str] = {}       # admission id -> the question, for turns started elsewhere
         self.prompts: dict[str, dict] = {}    # open approvals / questions by prompt id
         self.asks_by_prompt: dict[str, str] = {}
 
@@ -176,7 +250,8 @@ class BotState:
             self.emit(ev="settled", bot=self.bot, promptId=prompt_id)
 
     def attached(self, snapshot: dict) -> None:
-        """Prompts already open when this viewer attached are shown too; stale ones are dropped."""
+        """The recent conversation, then any prompts already open when this viewer attached."""
+        self.emit(ev="history", bot=self.bot, items=history_items(snapshot.get("messages")))
         open_now = {str(p.get("prompt_id")): p for p in snapshot.get("prompts") or [] if isinstance(p, dict)}
         for prompt_id in list(self.prompts):
             if prompt_id not in open_now:
@@ -212,6 +287,9 @@ class BotState:
         if kind == "session.info":
             if isinstance(payload.get("execution_generation"), int):
                 self.generation = payload["execution_generation"]
+            for row in payload.get("pending") or []:
+                if isinstance(row, dict) and row.get("admission_id") and isinstance(row.get("text"), str):
+                    self.asked.setdefault(row["admission_id"], strip_note(row["text"])[:4000])
             return True
         if kind in ("approval.settled", "clarify.settled"):
             self.settled(str(payload.get("prompt_id") or ""))
@@ -235,20 +313,30 @@ class BotState:
                 self.streams[admission] = clip(self.streams.get(admission, "") + text)
                 self.emit(ev="delta", bot=self.bot, text=self.streams[admission].strip(), **extra)
         elif kind == "tool.start":
-            name = str(payload.get("tool_name") or payload.get("name") or "a tool")[:64]
             # Text streamed before a tool call is commentary the final reply does not repeat.
             self.streams[admission] = ""
-            self.emit(ev="progress", bot=self.bot, text=f"Using {name}…", **extra)
+            self.emit(ev="progress", bot=self.bot, text=tool_label(payload), **extra)
+        elif kind == "tool.complete":
+            self.emit(ev="progress", bot=self.bot, text="Thinking…", **extra)
+        elif kind == "thinking.delta":
+            status = str(payload.get("text") or "").strip()
+            if status and not self.streams.get(admission):
+                self.emit(ev="progress", bot=self.bot, text=status[:120], **extra)
         elif kind in ("approval.request", "clarify.request"):
             self.prompt({**payload, "kind": "clarify" if kind == "clarify.request" else "approval"}, ask)
         elif kind == "message.complete":
             text = payload.get("text") or payload.get("content") or self.streams.get(admission, "")
             self.streams.pop(admission, None)
             self.mine.pop(admission, None)
+            asked = self.asked.pop(admission, "")
             status = str(payload.get("status") or payload.get("outcome") or "complete")
             text = clip(text).strip()
+            if SILENCE.match(text):
+                text = ""
             if not text and ask is None:
                 return True  # an empty turn nobody here asked for (a [SILENT] wake): nothing to show
+            if ask is None and asked:
+                extra = {"asked": asked}
             self.emit(ev="complete", bot=self.bot, text=text, status=status, **extra)
         return True
 
