@@ -992,7 +992,8 @@ test('Superwhisper and Voxtype wake lines route instead of being typed', () => {
 
 test('readme credits both companions and shows a real preview', () => {
   const readme = read('README.md')
-  assert.match(readme, /<h1 align="center">Grok Bot Desktop Companion<\/h1>/)
+  assert.match(readme, /<h1 align="center">Hermes Blob<\/h1>/)
+  assert.match(readme, /github\.com\/tcballard\/omarchy-plugin-grokbot-desktop/)
   assert.equal((readme.match(/omarchy-plugin\.svg/g) || []).length, 1)
   assert.match(readme, /jankeesvw\/omarchy-clippy/)
   assert.match(readme, /rdoupe\/omarchy-clanky/)

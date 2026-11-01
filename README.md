@@ -1,4 +1,6 @@
-<h1 align="center">Grok Bot Desktop Companion</h1>
+<h1 align="center">Hermes Blob</h1>
+
+<p align="center"><em>A fork of <a href="https://github.com/tcballard/omarchy-plugin-grokbot-desktop">Grok Bot Desktop Companion</a> by tcballard, being adapted to talk to Hermes Agent profiles.</em></p>
 
 <p align="center">Your bots, beside your work on Omarchy.</p>
 
