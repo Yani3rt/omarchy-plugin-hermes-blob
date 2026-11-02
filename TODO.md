@@ -12,6 +12,8 @@ Open items for the Hermes side of this fork, in no particular order.
 - **Donna's compression threshold.** Donna compresses at 85% of a 500k window (~425k tokens), so every bubble ask carries a large Bot Chat. Consider `compression.threshold: 0.5` for her profile. Owner's decision.
 - **Vision fallback keeps the task model (Hermes bug, not this project).** When a session's frozen `auxiliary.vision` credential no longer matches the config, the gateway returns vision to the primary route but keeps the task's own `model`, so the primary provider is asked for a model it does not serve (`404 model: grok-4.6`). Report upstream to NousResearch/hermes-agent if wanted.
 
+- **Older history past a compression.** A Bot Chat's live transcript starts at its last compression (Sentinel, for one, has 150 compacted rows), so "Load 20 earlier messages" stops there. The bridge could read those rows read-only from the profile's `state.db` once the live transcript runs out, still capped at 100 exchanges.
+
 ## Upstream and identity
 
 - **Feedback to tcballard.** Upstream PR #24 breaks five existing tests (IPC methods moved out of `Main.qml`) and its `IpcHandler` bridge logs `Type QVariant cannot be used across IPC` on stable Omarchy. Both are fixed here (commits `3cf9d53`, `e8956c5`); offer them on the PR.
