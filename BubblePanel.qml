@@ -283,7 +283,8 @@ Rectangle {
           }
         }
 
-        // Expand / collapse the card: chevrons apart to grow it, together to bring it back.
+        // Expand / collapse the card. The icon is two chevrons, ︿ over ﹀: pointing apart
+        // to grow the card, and they fold through flat to point together once it is grown.
         Rectangle {
           id: expandButton
           width: 32
@@ -296,39 +297,64 @@ Rectangle {
           color: app.bubbleExpanded ? Theme.selected : Theme.raised
           border.width: 1
           border.color: app.bubbleExpanded ? Theme.edgeStrong : Theme.edge
+          Behavior on color { ColorAnimation { duration: bubble.ms(180) } }
+          Behavior on border.color { ColorAnimation { duration: bubble.ms(180) } }
+
+          // A small press: the button dips, then springs back as the card starts to move.
+          SequentialAnimation {
+            id: expandPress
+            NumberAnimation { target: expandButton; property: "scale"; to: 0.84; duration: bubble.ms(90); easing.type: Easing.OutQuad }
+            NumberAnimation { target: expandButton; property: "scale"; to: 1; duration: bubble.ms(320); easing.type: Easing.OutBack; easing.overshoot: 2.2 }
+          }
+
           Canvas {
             id: expandIcon
             anchors.fill: parent
-            property bool open: app.bubbleExpanded
-            onOpenChanged: requestPaint()
+            // Follows the card's own animation, so the chevrons fold in step with it.
+            property real t: app.expandT
+            onTChanged: requestPaint()
             onPaint: {
               var ctx = getContext("2d")
               ctx.reset()
-              ctx.strokeStyle = Theme.textMuted
-              ctx.lineWidth = 1.6
+              ctx.strokeStyle = Theme.text
+              ctx.lineWidth = 1.7
               ctx.lineCap = "round"
               ctx.lineJoin = "round"
               var cx = width / 2
-              var w = width * 0.17
-              var h = height * 0.09
-              // Expanded: chevrons point in (collapse). Compact: they point out (expand).
-              var top = open ? height * 0.40 : height * 0.33
-              var bottom = open ? height * 0.60 : height * 0.67
-              var dir = open ? 1 : -1
+              var arm = width * 0.17
+              var lift = height * 0.1
+              var gap = height * 0.21
+              // -1: the top chevron points up and the bottom one down (grow).
+              //  1: they point toward each other (shrink). Flat on the way through.
+              var dir = -1 + 2 * t
+              var top = height / 2 - gap
+              var bottom = height / 2 + gap
+              ctx.globalAlpha = 0.85
               ctx.beginPath()
-              ctx.moveTo(cx - w, top - dir * h)
-              ctx.lineTo(cx, top + dir * h)
-              ctx.lineTo(cx + w, top - dir * h)
-              ctx.moveTo(cx - w, bottom + dir * h)
-              ctx.lineTo(cx, bottom - dir * h)
-              ctx.lineTo(cx + w, bottom + dir * h)
+              ctx.moveTo(cx - arm, top - dir * lift)
+              ctx.lineTo(cx, top + dir * lift)
+              ctx.lineTo(cx + arm, top - dir * lift)
+              ctx.moveTo(cx - arm, bottom + dir * lift)
+              ctx.lineTo(cx, bottom - dir * lift)
+              ctx.lineTo(cx + arm, bottom + dir * lift)
               ctx.stroke()
+              // Expanded: a short bar between them, so the pair reads as "fold" and never as a close X.
+              if (t > 0.01) {
+                ctx.globalAlpha = 0.85 * t
+                ctx.beginPath()
+                ctx.moveTo(cx - arm * 0.9, height / 2)
+                ctx.lineTo(cx + arm * 0.9, height / 2)
+                ctx.stroke()
+              }
             }
             onWidthChanged: requestPaint()
           }
           HoverArea {
             label: app.bubbleExpanded ? "Collapse" : "Expand"
-            onActivated: app.toggleExpanded()
+            onActivated: {
+              expandPress.restart()
+              app.toggleExpanded()
+            }
           }
         }
 
@@ -651,6 +677,13 @@ Rectangle {
           boundsBehavior: Flickable.StopAtBounds
           ScrollBar.vertical: ScrollBar { policy: threadFlick.contentHeight > threadFlick.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
           onMovementStarted: scrollAnim.stop()
+          // Whether the reader is at the latest message: then a card that grows or shrinks
+          // keeps it in view, instead of the thread sliding under the composer.
+          property bool atEnd: true
+          onMovementEnded: atEnd = contentY + height >= contentHeight - 4
+          onHeightChanged: {
+            if (atEnd && !scrollAnim.running) contentY = Math.max(0, contentHeight - height)
+          }
 
           NumberAnimation {
             id: scrollAnim

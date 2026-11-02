@@ -76,6 +76,16 @@ Item {
   // above or below the companion. Toggled from the card's header or `expand`.
   property bool bubbleExpanded: false
   readonly property real compactHeight: 440
+  // 0 compact … 1 expanded. The card's height follows it, so growing eases out from the
+  // compact size (a long, soft deceleration) and shrinking settles back a little quicker.
+  property real expandT: bubbleExpanded ? 1 : 0
+  Behavior on expandT {
+    NumberAnimation {
+      duration: root.ms(root.bubbleExpanded ? 460 : 340)
+      easing.type: Easing.BezierSpline
+      easing.bezierCurve: root.bubbleExpanded ? [0.16, 1, 0.3, 1, 1, 1] : [0.4, 0, 0.2, 1, 1, 1]
+    }
+  }
 
   function toggleExpanded() {
     root.bubbleExpanded = !root.bubbleExpanded
@@ -2486,7 +2496,8 @@ Item {
         var full = Math.max(360, Math.min(room, win.height - 16))
         // Compact by default, so a conversation loaded with its history keeps the card's
         // usual size; the header's expand button gives it all the room on that side.
-        return root.bubbleExpanded ? full : Math.min(full, root.compactHeight)
+        var compact = Math.min(full, root.compactHeight)
+        return compact + (full - compact) * root.expandT
       }
       x: Math.max(8, Math.min(stage.x + stage.width - width, win.width - width - 8))
       y: {

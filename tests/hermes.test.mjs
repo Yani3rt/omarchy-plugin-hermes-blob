@@ -245,8 +245,13 @@ test('the chat card opens compact and its header button grows it to all the room
   const main = fs.readFileSync(path.join(root, 'Main.qml'), 'utf8')
   const panel = fs.readFileSync(path.join(root, 'BubblePanel.qml'), 'utf8')
   assert.match(main, /property bool bubbleExpanded: false\n\s*readonly property real compactHeight: 440/)
-  assert.match(main, /return root\.bubbleExpanded \? full : Math\.min\(full, root\.compactHeight\)/)
-  assert.match(panel, /id: expandButton[\s\S]*?anchors\.right: minimizeButton\.left[\s\S]*?onActivated: app\.toggleExpanded\(\)/)
+  // The card's height eases between the two through expandT, which honours reduced motion.
+  assert.match(main, /property real expandT: bubbleExpanded \? 1 : 0\n\s*Behavior on expandT \{\n\s*NumberAnimation \{\n\s*duration: root\.ms\(/)
+  assert.match(main, /var compact = Math\.min\(full, root\.compactHeight\)\n\s*return compact \+ \(full - compact\) \* root\.expandT/)
+  assert.match(panel, /id: expandButton[\s\S]*?anchors\.right: minimizeButton\.left[\s\S]*?expandPress\.restart\(\)\n\s*app\.toggleExpanded\(\)/)
+  // The chevrons fold with the card, and the latest message stays in view as it moves.
+  assert.match(panel, /property real t: app\.expandT\n\s*onTChanged: requestPaint\(\)/)
+  assert.match(panel, /onHeightChanged: \{\n\s*if \(atEnd && !scrollAnim\.running\) contentY = Math\.max\(0, contentHeight - height\)/)
   // The header pill leaves room for the extra button.
   assert.match(panel, /width: Math\.min\(parent\.width - 156, headerRow\.implicitWidth \+ 22\)/)
   for (const file of ['qml/CompanionShellIpc.qml', 'qml/CompanionIpcHandler.qml']) {
