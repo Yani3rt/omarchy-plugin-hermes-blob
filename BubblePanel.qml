@@ -21,6 +21,9 @@ Rectangle {
   // eases its own height when it appears, goes, or grows, so the card
   // follows without an animation of its own that would lag behind its
   // content; between pages it blends from one page's height to the other's.
+  // For the shell's read-only status: where the thread is scrolled.
+  readonly property real threadContentY: threadFlick.contentY
+  readonly property real threadContentHeight: threadFlick.contentHeight
   readonly property real chatHeight: Math.min(maxHeight, column.implicitHeight + 28)
   readonly property real appearanceHeight: Math.min(maxHeight, settingsPage.implicitHeight + 28)
   implicitWidth: 464
@@ -821,14 +824,20 @@ Rectangle {
           // height the view is easing to, so while the thread still fits it
           // stays at the top and the view's growth reveals the new content;
           // once it is full, the scroll eases on the same curve.
-          // An earlier page went in above: keep the reader where they were, by the height it added.
-          property real lastContentHeight: 0
+          // An earlier page goes in above: everything below the old top keeps its place, so the
+          // reader's distance from the end is held while the thread relays out (the delegates
+          // rebuild and the content briefly shrinks, which would otherwise clamp it to the top).
+          property real olderFromBottom: -1
+          Connections {
+            target: app
+            function onPrependingOlderChanged() {
+              threadFlick.olderFromBottom = app.prependingOlder ? threadFlick.contentHeight - threadFlick.contentY : -1
+            }
+          }
           onContentHeightChanged: {
-            var added = contentHeight - lastContentHeight
-            lastContentHeight = contentHeight
-            if (app && app.prependingOlder) {
+            if (app && app.prependingOlder && olderFromBottom >= 0) {
               scrollAnim.stop()
-              contentY = Math.max(0, contentY + Math.max(0, added))
+              contentY = Math.max(0, contentHeight - olderFromBottom)
               atEnd = false
               return
             }

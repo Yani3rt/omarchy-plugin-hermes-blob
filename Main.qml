@@ -444,6 +444,12 @@ Item {
     return list
   }
 
+  Timer {
+    id: olderSettle
+    interval: 500
+    onTriggered: root.prependingOlder = false
+  }
+
   function loadOlder() {
     var bot = root.threadBotId
     var info = root.olderInfo[bot]
@@ -466,7 +472,9 @@ Item {
     if (botId === root.threadBotId) {
       root.prependingOlder = true
       root.history = list.concat(root.history).slice(-root.historyLimit)
-      Qt.callLater(function () { root.prependingOlder = false })
+      // The thread relays out over a few frames (delegates rebuild, the chip folds away);
+      // keep its place until that has settled.
+      olderSettle.restart()
       return
     }
     var next = Object.assign({}, root.threads)
@@ -679,6 +687,8 @@ Item {
       expanded: root.bubbleExpanded,
       cardHeight: bubblePanel ? Math.round(bubblePanel.height) : 0,
       cardMax: bubblePanel ? Math.round(bubblePanel.maxHeight) : 0,
+      threadY: bubblePanel ? Math.round(bubblePanel.threadContentY) : 0,
+      threadHeight: bubblePanel ? Math.round(bubblePanel.threadContentHeight) : 0,
       history: root.history.length,
       older: root.olderInfo[root.threadBotId] || null,
       asked: String(root.askedText || "").slice(0, 120)

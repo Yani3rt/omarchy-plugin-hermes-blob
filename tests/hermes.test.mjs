@@ -274,7 +274,10 @@ test('earlier Bot Chat pages load twenty at a time and keep the reader\'s place'
   assert.match(panel, /id: olderArrow[\s\S]*?ctx\.lineTo\(width \/ 2, 1\.5\)/)
   assert.match(panel, /Behavior on t \{ NumberAnimation \{ duration: bubble\.ms\(olderRow\.shown \? 420 : 200\)/)
   assert.match(panel, /onShownChanged: if \(shown\) arrowNudge\.restart\(\)/)
-  assert.match(panel, /if \(app && app\.prependingOlder\) \{\n\s*scrollAnim\.stop\(\)\n\s*contentY = Math\.max\(0, contentY \+ Math\.max\(0, added\)\)/)
+  // The reader's distance from the end is held while the thread relays out, then released.
+  assert.match(panel, /threadFlick\.olderFromBottom = app\.prependingOlder \? threadFlick\.contentHeight - threadFlick\.contentY : -1/)
+  assert.match(panel, /if \(app && app\.prependingOlder && olderFromBottom >= 0\) \{\n\s*scrollAnim\.stop\(\)\n\s*contentY = Math\.max\(0, contentHeight - olderFromBottom\)/)
+  assert.match(qmlFunction(main, 'applyOlder'), /olderSettle\.restart\(\)/)
   for (const file of ['qml/CompanionShellIpc.qml', 'qml/CompanionIpcHandler.qml']) {
     assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /function older\(\): string \{ return host\.loadOlder\(\) \}/)
   }
