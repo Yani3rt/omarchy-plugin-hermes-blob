@@ -294,7 +294,7 @@ test('a "Scroll down" chip floats over the thread while the latest message is ou
   assert.match(panel, /function scrollToEnd\(\) \{[\s\S]*?scrollAnim\.to = end/)
 })
 
-test('dictation falls through stable Omarchy and a stopped Voxtype to Hex', () => {
+test('dictation falls through to Hex, and Hex hands the transcript back for the field', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'blob-dictate-'))
   const bin = path.join(dir, 'bin')
   fs.mkdirSync(bin)
@@ -302,33 +302,53 @@ test('dictation falls through stable Omarchy and a stopped Voxtype to Hex', () =
   const write = (name, body) => fs.writeFileSync(path.join(bin, name), body, { mode: 0o755 })
   // Stable Omarchy has no `omarchy dictation`; Voxtype's daemon is not running.
   write('omarchy', '#!/bin/sh\necho "Unknown Omarchy command: omarchy $*" >&2\nexit 127\n')
-  write('voxtype', '#!/bin/sh\necho "voxtype $*" >> "$DICTATION_LOG"\necho "Error: Voxtype daemon is not running" >&2\nexit 1\n')
-  write('hex', '#!/bin/sh\necho "hex $*" >> "$DICTATION_LOG"\n[ "$1" = start ] && { touch "$HEX_UP"; exit 0; }\n[ -e "$HEX_UP" ] || exit 3\nexit 0\n')
-  const env = { PATH: bin + ':/usr/bin:/bin', HOME: dir, XDG_CONFIG_HOME: path.join(dir, 'config'), DICTATION_LOG: log, HEX_UP: path.join(dir, 'hex-up') }
+  write('voxtype', '#!/bin/sh\necho "voxtype $*" >> "$DICTATION_LOG"\nexit 1\n')
+  write('hex', [
+    '#!/bin/sh',
+    'echo "hex $*" >> "$DICTATION_LOG"',
+    'case "$*" in',
+    '  start) touch "$D/up"; exit 0 ;;',
+    '  "status --json") [ -e "$D/up" ] || exit 3; s=idle; [ -e "$D/rec" ] && s=recording; printf \'{"capture":{"state":"%s"}}\' "$s"; exit 0 ;;',
+    '  "dictation start") touch "$D/rec"; exit 0 ;;',
+    '  "dictation stop --print") rm -f "$D/rec"; [ -e "$D/silent" ] && exit 4; printf "hello from hex\\n"; exit 0 ;;',
+    'esac',
+    'exit 2'
+  ].join('\n') + '\n')
+  const env = { PATH: bin + ':/usr/bin:/bin', HOME: dir, XDG_CONFIG_HOME: path.join(dir, 'config'), DICTATION_LOG: log, D: dir }
   const dictate = () => spawnSync('/usr/bin/python3', [path.join(root, 'bin/grokbot-dictate')], { encoding: 'utf8', env })
+  const calls = () => fs.readFileSync(log, 'utf8').trim().split('\n').filter((l) => l.startsWith('hex'))
 
-  // Hex is not running yet: it is started, then toggled.
+  // First press: Hex is closed, so it is opened, then a locked recording starts. Nothing printed.
   let result = dictate()
   assert.equal(result.status, 0, result.stderr)
-  assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['voxtype record toggle', 'hex dictation toggle', 'hex start', 'hex dictation toggle'])
+  assert.equal(result.stdout, '')
+  assert.deepEqual(calls(), ['hex status --json', 'hex start', 'hex dictation start'])
 
-  // Hex running: one toggle.
+  // Second press: the recording is finished and its transcript comes back on stdout only.
   fs.rmSync(log)
   result = dictate()
   assert.equal(result.status, 0, result.stderr)
-  assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['voxtype record toggle', 'hex dictation toggle'])
+  assert.equal(result.stdout, 'hello from hex')
+  assert.deepEqual(calls(), ['hex status --json', 'hex dictation stop --print'])
 
-  // Omarchy's dictation default may name hex, which then goes first.
-  fs.mkdirSync(path.join(dir, 'config', 'omarchy', 'defaults'), { recursive: true })
-  fs.writeFileSync(path.join(dir, 'config', 'omarchy', 'defaults', 'dictation'), 'hex\n')
-  fs.rmSync(log)
-  assert.equal(dictate().status, 0)
-  assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['hex dictation toggle'])
+  // No speech heard: a quiet success with nothing to insert.
+  fs.writeFileSync(path.join(dir, 'silent'), '')
+  dictate()
+  result = dictate()
+  assert.equal(result.status, 0)
+  assert.equal(result.stdout, '')
 
   // Nothing takes it: a plain failure, not a crash.
   fs.rmSync(path.join(bin, 'hex'))
-  fs.rmSync(path.join(dir, 'config', 'omarchy', 'defaults', 'dictation'))
   result = dictate()
   assert.equal(result.status, 1)
   assert.match(result.stderr, /No dictation backend took the toggle/)
+})
+
+test('a transcript handed back by the helper goes in at the field\'s cursor', () => {
+  const main = fs.readFileSync(path.join(root, 'Main.qml'), 'utf8')
+  const panel = fs.readFileSync(path.join(root, 'BubblePanel.qml'), 'utf8')
+  assert.match(main, /id: dictateProc\n\s*command: \["\/usr\/bin\/python3", root\.dictateHelper\]\n\s*stdout: StdioCollector/)
+  assert.match(main, /if \(bubblePanel\) bubblePanel\.insertText\(text\)/)
+  assert.match(panel, /function insertText\(value\) \{[\s\S]*?promptField\.insert\(at, text\)/)
 })

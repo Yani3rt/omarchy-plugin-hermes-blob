@@ -8,9 +8,14 @@ Tries, in order, and stops at the first that takes the toggle:
 2. The backend named in ~/.config/omarchy/defaults/dictation, if it is one of
    superwhisper, voxtype or hex.
 3. Superwhisper (`superwhisper record`), Voxtype (`voxtype record toggle`, which
-   fails while its daemon is not running), then Hex (`hex dictation toggle`,
-   which pastes the transcript at the current focus; Hex is opened with
-   `hex start` first when it is not running).
+   fails while its daemon is not running), then Hex. Hex is opened with
+   `hex start` when it is not running.
+
+Hex does not paste into the companion's card: its synthetic paste goes to the focused
+app window, and the card is a shell layer, not one. So with Hex the button starts a
+locked recording (`hex dictation start`) and the next press finishes it with
+`hex dictation stop --print`, which hands the transcript back; this helper prints it on
+stdout, and the shell inserts it into the field. Nothing else is ever printed there.
 
 Every backend runs as a child process, so a failure falls through to the next
 one. Nothing private is passed: the transcript goes from the backend straight
@@ -18,6 +23,7 @@ to the focused field.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -31,7 +37,10 @@ BACKENDS = {
 }
 DEFAULT_ORDER = ["superwhisper", "voxtype", "hex"]
 HEX_NOT_RUNNING = 3
+HEX_NO_SPEECH = 4
 TIMEOUT = 20
+# Finishing a dictation waits for its transcript.
+TRANSCRIBE_TIMEOUT = 90
 
 
 def defaults_file() -> Path:
@@ -49,14 +58,14 @@ def read_backend() -> str:
     return line if line in BACKENDS else ""
 
 
-def run(argv: list[str]):
+def run(argv: list[str], timeout: float = TIMEOUT):
     """The finished child, or None when the command is missing or would not run."""
     path = shutil.which(argv[0])
     if not path:
         return None
     try:
         return subprocess.run([path, *argv[1:]], stdin=subprocess.DEVNULL, capture_output=True,
-                              text=True, timeout=TIMEOUT)
+                              text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         return None
 
@@ -65,15 +74,45 @@ def ok(result) -> bool:
     return result is not None and result.returncode == 0
 
 
-def try_backend(name: str) -> bool:
-    argv = BACKENDS[name]
-    result = run(argv)
-    if ok(result):
-        return True
-    if name == "hex" and result is not None and result.returncode == HEX_NOT_RUNNING:
+def hex_recording():
+    """True / False for Hex's dictation capture, or None when Hex is not answering."""
+    result = run(["hex", "status", "--json"])
+    if not ok(result):
+        return None
+    try:
+        capture = (json.loads(result.stdout) or {}).get("capture") or {}
+    except ValueError:
+        return None
+    return "record" in str(capture.get("state") or "").lower()
+
+
+def try_hex() -> bool:
+    if shutil.which("hex") is None:
+        return False
+    recording = hex_recording()
+    if recording is None:
         # Control commands never launch Hex; `start` opens it and waits until it answers.
-        return ok(run(["hex", "start"])) and ok(run(argv))
-    return False
+        if not ok(run(["hex", "start"])):
+            return False
+        recording = False
+    if not recording:
+        return ok(run(["hex", "dictation", "start"]))
+    result = run(["hex", "dictation", "stop", "--print"], timeout=TRANSCRIBE_TIMEOUT)
+    if result is None:
+        return False
+    if result.returncode == HEX_NO_SPEECH:
+        return True
+    if result.returncode != 0:
+        return False
+    sys.stdout.write(result.stdout.strip())
+    sys.stdout.flush()
+    return True
+
+
+def try_backend(name: str) -> bool:
+    if name == "hex":
+        return try_hex()
+    return ok(run(BACKENDS[name]))
 
 
 def main() -> int:
