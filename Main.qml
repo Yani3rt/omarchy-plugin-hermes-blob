@@ -688,6 +688,7 @@ Item {
       cardHeight: bubblePanel ? Math.round(bubblePanel.height) : 0,
       cardMax: bubblePanel ? Math.round(bubblePanel.maxHeight) : 0,
       threadY: bubblePanel ? Math.round(bubblePanel.threadContentY) : 0,
+      scrollDown: bubblePanel ? bubblePanel.scrollDownShown : false,
       threadHeight: bubblePanel ? Math.round(bubblePanel.threadContentHeight) : 0,
       history: root.history.length,
       older: root.olderInfo[root.threadBotId] || null,

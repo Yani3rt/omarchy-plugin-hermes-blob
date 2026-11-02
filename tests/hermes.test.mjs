@@ -284,3 +284,12 @@ test('earlier Bot Chat pages load twenty at a time and keep the reader\'s place'
     assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /function older\(\): string \{ return host\.loadOlder\(\) \}/)
   }
 })
+
+test('a "Scroll down" chip floats over the thread while the latest message is out of view', () => {
+  const panel = fs.readFileSync(path.join(root, 'BubblePanel.qml'), 'utf8')
+  assert.match(panel, /id: downChip\n\s*readonly property bool shown: threadFlick\.contentHeight > threadFlick\.height \+ 4\n\s*&& threadFlick\.contentY \+ threadFlick\.height < threadFlick\.contentHeight - 24/)
+  assert.match(panel, /Behavior on t \{ NumberAnimation \{ duration: bubble\.ms\(downChip\.shown \? 360 : 180\)/)
+  assert.match(panel, /text: "Scroll down"/)
+  assert.match(panel, /onActivated: bubble\.scrollToEnd\(\)/)
+  assert.match(panel, /function scrollToEnd\(\) \{[\s\S]*?scrollAnim\.to = end/)
+})
