@@ -100,7 +100,8 @@ test('hermes dispatch runs the profile\'s Bot Chat with the prompt on stdin only
   const call = JSON.parse(fs.readFileSync(path.join(home, 'hermes-call.json'), 'utf8'))
   assert.deepEqual(call.argv, ['-p', 'donna', 'chat', '--in', home, '-c', 'Bot Chat', '--create-if-missing', '--query-file', '-', '-Q'])
   assert.equal(call.argv.some((part) => part.includes(token)), false)
-  assert.match(call.stdin, /^\[via Omarchy desktop bubble[^\n]*\]\n\nprivate-prompt-token$/)
+  // The ask reaches Hermes exactly as typed: no note, no prefix.
+  assert.equal(call.stdin, 'private-prompt-token')
 
   const zero = ask(home, { botId: 'default', botName: 'Zero', prompt: 'hi' })
   assert.equal(zero.stdout.trim(), 'reply from default')
@@ -186,7 +187,7 @@ test('Hermes mode keeps a bridge on stdin/stdout and falls back to the command l
 test('the bridge never puts prompt or reply text on its command line or stderr', () => {
   const source = fs.readFileSync(path.join(root, 'bin/hermes-blob-bridge'), 'utf8')
   assert.doesNotMatch(source, /log\([^)]*\btext\b/)
-  assert.match(source, /input_id=uuid\.uuid4\(\)\.hex, text=NOTE \+ "\\n\\n" \+ text/)
+  assert.match(source, /input_id=uuid\.uuid4\(\)\.hex, text=text\)/)
   assert.match(source, /asyncio\.to_thread\(_session_ticket, self\.home, result\.endpoint\)/)
 })
 

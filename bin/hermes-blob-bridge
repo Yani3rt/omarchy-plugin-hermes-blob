@@ -56,7 +56,8 @@ PROFILE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 ASK_ID = re.compile(r"^[0-9a-f]{8,32}$")
 BOT_CHAT = "Bot Chat"
 TEXT_LIMIT = 16000
-# Same note the CLI path prepends; it is stored with the turn, so it stays short.
+# Earlier builds prefixed every ask with this note. Asks now go to the bot exactly as typed;
+# the note is only stripped from Bot Chat history that still carries it.
 NOTE = "[via Omarchy desktop bubble: plain text only, a few short sentences]"
 RETRY_MIN, RETRY_MAX = 2.0, 30.0
 HISTORY_EXCHANGES = 20
@@ -436,7 +437,7 @@ class BotLink:
         self.state.submitting += 1
         try:
             receipt = await client.rpc("prompt.submit", session_id=self.state.session_id,
-                                       input_id=uuid.uuid4().hex, text=NOTE + "\n\n" + text)
+                                       input_id=uuid.uuid4().hex, text=text)
         except Exception as exc:
             self.state.submit_failed()
             self.bridge.emit(ev="error", bot=self.bot, askId=ask_id, code="refused",

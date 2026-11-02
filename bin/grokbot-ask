@@ -62,8 +62,6 @@ AGENT_TIMEOUT = 180
 HERMES_TIMEOUT = 600
 HERMES_PROFILE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 HERMES_BOT_CHAT = "Bot Chat"
-# Prepended to each Hermes turn. Kept short: it is stored in the Bot Chat.
-HERMES_NOTE = "[via Omarchy desktop bubble: plain text only, a few short sentences]"
 # The process group of the running agent, so a Stop (SIGTERM from the shell)
 # ends the agent's turn too instead of orphaning it.
 CHILD_PGID = 0
@@ -914,7 +912,7 @@ def main(argv=None):
         if not argv:
             print(problem, file=sys.stderr)
             return 127
-        text = HERMES_NOTE + "\n\n" + with_attachments(payload["prompt"], attachments)
+        text = with_attachments(payload["prompt"], attachments)
         return run_agent(argv, text, child_env("hermes", True), "hermes", workdir or None,
                          ask_timeout(entry, desktop, HERMES_TIMEOUT))
     argv, agent, custom, problem = agent_command(entry, desktop)
