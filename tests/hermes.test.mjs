@@ -265,6 +265,10 @@ test('earlier Bot Chat pages load twenty at a time and keep the reader\'s place'
   assert.match(qmlFunction(main, 'loadOlder'), /root\.bridgeSend\(\{ op: "older", bot: bot, before: info\.key \}\)/)
   assert.match(qmlFunction(main, 'applyOlder'), /root\.history = list\.concat\(root\.history\)\.slice\(-root\.historyLimit\)/)
   assert.match(main, /readonly property int historyLimit: 200/)
+  // At most 100 exchanges come from earlier pages: the button goes, and a crossing page is trimmed.
+  assert.match(main, /readonly property int olderCap: 100/)
+  assert.match(main, /&& root\.history\.length < root\.olderCap/)
+  assert.match(qmlFunction(main, 'applyOlder'), /var room = Math\.max\(0, root\.olderCap - shown\)/)
   assert.match(panel, /text: app && app\.olderLoading \? "Loading…" : "Load 20 earlier messages"/)
   assert.match(panel, /if \(app && app\.prependingOlder\) \{\n\s*scrollAnim\.stop\(\)\n\s*contentY = Math\.max\(0, contentY \+ Math\.max\(0, added\)\)/)
   for (const file of ['qml/CompanionShellIpc.qml', 'qml/CompanionIpcHandler.qml']) {

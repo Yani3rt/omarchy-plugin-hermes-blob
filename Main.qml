@@ -419,7 +419,10 @@ Item {
   // Earlier Bot Chat pages, per bot: the key of the oldest exchange shown and whether any
   // older ones remain. "Load 20 earlier messages" at the top of the thread asks for the next.
   property var olderInfo: ({})
+  // "Load 20 earlier messages" stops once a conversation shows this many exchanges.
+  readonly property int olderCap: 100
   readonly property bool olderHere: !!(root.olderInfo[root.threadBotId] && root.olderInfo[root.threadBotId].more)
+    && root.history.length < root.olderCap
   readonly property bool olderLoading: !!(root.olderInfo[root.threadBotId] && root.olderInfo[root.threadBotId].loading)
   // Set while an earlier page is prepended, so the thread keeps the reader's place.
   property bool prependingOlder: false
@@ -445,14 +448,19 @@ Item {
     var bot = root.threadBotId
     var info = root.olderInfo[bot]
     if (!info || !info.more || info.loading || !info.key) return "nothing"
+    if (root.history.length >= root.olderCap) return "limit"
     if (!root.bridgeSend({ op: "older", bot: bot, before: info.key })) return "no bridge"
     root.setOlder(bot, { loading: true })
     return "ok"
   }
 
   function applyOlder(botId, items, more) {
+    var shown = botId === root.threadBotId ? root.history.length : ((root.threads[botId] || {}).history || []).length
+    // Never past the cap: keep the newest part of a page that would cross it.
+    var room = Math.max(0, root.olderCap - shown)
+    items = (items || []).slice(Math.max(0, (items || []).length - room))
     var list = root.historyEntries(items)
-    var oldest = (items || []).length > 0 ? String(items[0].key || "") : ""
+    var oldest = items.length > 0 ? String(items[0].key || "") : ""
     root.setOlder(botId, { loading: false, more: more === true && oldest !== "", key: oldest || (root.olderInfo[botId] || {}).key })
     if (list.length === 0) return
     if (botId === root.threadBotId) {
