@@ -293,3 +293,42 @@ test('a "Scroll down" chip floats over the thread while the latest message is ou
   assert.match(panel, /onActivated: bubble\.scrollToEnd\(\)/)
   assert.match(panel, /function scrollToEnd\(\) \{[\s\S]*?scrollAnim\.to = end/)
 })
+
+test('dictation falls through stable Omarchy and a stopped Voxtype to Hex', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'blob-dictate-'))
+  const bin = path.join(dir, 'bin')
+  fs.mkdirSync(bin)
+  const log = path.join(dir, 'log')
+  const write = (name, body) => fs.writeFileSync(path.join(bin, name), body, { mode: 0o755 })
+  // Stable Omarchy has no `omarchy dictation`; Voxtype's daemon is not running.
+  write('omarchy', '#!/bin/sh\necho "Unknown Omarchy command: omarchy $*" >&2\nexit 127\n')
+  write('voxtype', '#!/bin/sh\necho "voxtype $*" >> "$DICTATION_LOG"\necho "Error: Voxtype daemon is not running" >&2\nexit 1\n')
+  write('hex', '#!/bin/sh\necho "hex $*" >> "$DICTATION_LOG"\n[ "$1" = start ] && { touch "$HEX_UP"; exit 0; }\n[ -e "$HEX_UP" ] || exit 3\nexit 0\n')
+  const env = { PATH: bin + ':/usr/bin:/bin', HOME: dir, XDG_CONFIG_HOME: path.join(dir, 'config'), DICTATION_LOG: log, HEX_UP: path.join(dir, 'hex-up') }
+  const dictate = () => spawnSync('/usr/bin/python3', [path.join(root, 'bin/grokbot-dictate')], { encoding: 'utf8', env })
+
+  // Hex is not running yet: it is started, then toggled.
+  let result = dictate()
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['voxtype record toggle', 'hex dictation toggle', 'hex start', 'hex dictation toggle'])
+
+  // Hex running: one toggle.
+  fs.rmSync(log)
+  result = dictate()
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['voxtype record toggle', 'hex dictation toggle'])
+
+  // Omarchy's dictation default may name hex, which then goes first.
+  fs.mkdirSync(path.join(dir, 'config', 'omarchy', 'defaults'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'config', 'omarchy', 'defaults', 'dictation'), 'hex\n')
+  fs.rmSync(log)
+  assert.equal(dictate().status, 0)
+  assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['hex dictation toggle'])
+
+  // Nothing takes it: a plain failure, not a crash.
+  fs.rmSync(path.join(bin, 'hex'))
+  fs.rmSync(path.join(dir, 'config', 'omarchy', 'defaults', 'dictation'))
+  result = dictate()
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /No dictation backend took the toggle/)
+})

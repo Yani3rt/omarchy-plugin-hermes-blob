@@ -1,23 +1,37 @@
 #!/usr/bin/python3
-"""Toggle the dictation backend selected in Omarchy.
+"""Toggle dictation with whichever backend is actually available.
 
-`omarchy dictation toggle` reads ~/.config/omarchy/defaults/dictation and
-starts Superwhisper or Voxtype. This helper calls that when `omarchy` is on
-PATH. Otherwise it calls the configured backend directly: `superwhisper record`
-or `voxtype record toggle`. The defaults file is only accepted when it names
-one of those two backends.
+Tries, in order, and stops at the first that takes the toggle:
+
+1. `omarchy dictation toggle` (Omarchy dev). Stable Omarchy has no such command
+   ("Unknown Omarchy command"), so that answer moves on instead of ending here.
+2. The backend named in ~/.config/omarchy/defaults/dictation, if it is one of
+   superwhisper, voxtype or hex.
+3. Superwhisper (`superwhisper record`), Voxtype (`voxtype record toggle`, which
+   fails while its daemon is not running), then Hex (`hex dictation toggle`,
+   which pastes the transcript at the current focus; Hex is opened with
+   `hex start` first when it is not running).
+
+Every backend runs as a child process, so a failure falls through to the next
+one. Nothing private is passed: the transcript goes from the backend straight
+to the focused field.
 """
 from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 BACKENDS = {
     "superwhisper": ["superwhisper", "record"],
     "voxtype": ["voxtype", "record", "toggle"],
+    "hex": ["hex", "dictation", "toggle"],
 }
+DEFAULT_ORDER = ["superwhisper", "voxtype", "hex"]
+HEX_NOT_RUNNING = 3
+TIMEOUT = 20
 
 
 def defaults_file() -> Path:
@@ -35,28 +49,44 @@ def read_backend() -> str:
     return line if line in BACKENDS else ""
 
 
-def exec_argv(argv: list[str]) -> bool:
+def run(argv: list[str]):
+    """The finished child, or None when the command is missing or would not run."""
     path = shutil.which(argv[0])
     if not path:
-        return False
-    os.execv(path, [path, *argv[1:]])
-    return True
+        return None
+    try:
+        return subprocess.run([path, *argv[1:]], stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, timeout=TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def ok(result) -> bool:
+    return result is not None and result.returncode == 0
+
+
+def try_backend(name: str) -> bool:
+    argv = BACKENDS[name]
+    result = run(argv)
+    if ok(result):
+        return True
+    if name == "hex" and result is not None and result.returncode == HEX_NOT_RUNNING:
+        # Control commands never launch Hex; `start` opens it and waits until it answers.
+        return ok(run(["hex", "start"])) and ok(run(argv))
+    return False
 
 
 def main() -> int:
-    omarchy = shutil.which("omarchy")
-    if omarchy:
-        os.execv(omarchy, [omarchy, "dictation", "toggle"])
+    # On stable Omarchy this answers "Unknown Omarchy command", which is not the end of it.
+    if ok(run(["omarchy", "dictation", "toggle"])):
+        return 0
     configured = read_backend()
-    order = [configured] if configured else ["superwhisper", "voxtype"]
+    order = ([configured] if configured else []) + [name for name in DEFAULT_ORDER if name != configured]
     for name in order:
-        if name and exec_argv(BACKENDS[name]):
+        if try_backend(name):
             return 0
-    if configured:
-        for name in ("superwhisper", "voxtype"):
-            if name != configured and exec_argv(BACKENDS[name]):
-                return 0
-    print("No dictation command found. Install omarchy, superwhisper, or voxtype.", file=sys.stderr)
+    print("No dictation backend took the toggle. Start Hex, enable Voxtype, or install Superwhisper.",
+          file=sys.stderr)
     return 1
 
 
