@@ -160,7 +160,7 @@ Set `dispatch` to `webhook`, `agent` or `hermes` in `~/.config/omarchy/grokbot-d
 
 While Hermes mode is on, the shell keeps one bridge process (`bin/hermes-blob-bridge`, run under Hermes' own Python) attached to every bot's Bot Chat on the local Hermes gateway, the same way Hermes Desktop and the TUI attach. It signs in with a one-use ticket from the gateway's private socket, so no API key is stored, and it talks to the shell only through stdin and stdout. Through the bridge:
 
-- each bot's conversation opens on its recent Bot Chat (the last 20 exchanges, whichever surface they happened on), with Hermes' own plumbing rows left out and a teammate's message labelled as theirs;
+- each bot's conversation opens on its recent Bot Chat (the last 20 exchanges, whichever surface they happened on), with Hermes' own plumbing rows left out and a teammate's message labelled as theirs; **Load 20 earlier messages** at the top of the thread brings the next page, keeping your place (`older` over IPC). A Bot Chat's transcript starts at its last compression;
 - replies stream into the bubble as they are written, with a faint line under them saying what the bot is doing ("Running a command…", "Messaging sentinel…"), and an ask takes about as long as the model does;
 - a turn started in Desktop, Telegram or the CLI shows up with its question;
 - turns the companion did not start, such as a teammate's late handoff reply or a routine, land in that bot's conversation with an unread dot;

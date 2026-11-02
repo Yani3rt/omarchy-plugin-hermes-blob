@@ -69,6 +69,8 @@ Item {
     function compact(): string { return host.compactConversation() }
     // Grow the chat card to all the room on its side, or back to compact.
     function expand(): string { return host.toggleExpanded() }
+    // Hermes mode: load the 20 exchanges before the oldest one shown.
+    function older(): string { return host.loadOlder() }
     function answer(promptId: string, value: string): string { return host.answerPrompt(promptId, value) }
   }
 }

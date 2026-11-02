@@ -200,7 +200,8 @@ Item {
   // askedFiles, bubbleBody, and noticeLinks. A new ask or notice moves the
   // latest here.
   property var history: []
-  readonly property int historyLimit: 40
+  // Exchanges kept per bot; earlier Bot Chat pages loaded on request count towards it.
+  readonly property int historyLimit: 200
   // Each bot keeps its own conversation. The one on screen lives in
   // history, askedText, bubbleBody, noticeLinks, and promptDraft; switching
   // bots puts it away under its bot and brings the next bot's back. They are
@@ -415,7 +416,59 @@ Item {
 
   // A bot's recent Bot Chat, loaded once into a conversation that is still empty here, so
   // the bubble opens where the conversation is, whichever surface it last happened on.
-  function applyHistory(botId, items) {
+  // Earlier Bot Chat pages, per bot: the key of the oldest exchange shown and whether any
+  // older ones remain. "Load 20 earlier messages" at the top of the thread asks for the next.
+  property var olderInfo: ({})
+  readonly property bool olderHere: !!(root.olderInfo[root.threadBotId] && root.olderInfo[root.threadBotId].more)
+  readonly property bool olderLoading: !!(root.olderInfo[root.threadBotId] && root.olderInfo[root.threadBotId].loading)
+  // Set while an earlier page is prepended, so the thread keeps the reader's place.
+  property bool prependingOlder: false
+
+  function setOlder(botId, info) {
+    var next = Object.assign({}, root.olderInfo)
+    next[botId] = Object.assign({}, next[botId] || {}, info)
+    root.olderInfo = next
+  }
+
+  function historyEntries(items) {
+    var list = []
+    var i
+    for (i = 0; i < (items || []).length; i++) {
+      var body = root.cleanText(items[i].body, 4000)
+      if (body === "") continue
+      list.push({ asked: root.cleanText(items[i].asked, 4000), files: [], body: body, links: [], wait: "" })
+    }
+    return list
+  }
+
+  function loadOlder() {
+    var bot = root.threadBotId
+    var info = root.olderInfo[bot]
+    if (!info || !info.more || info.loading || !info.key) return "nothing"
+    if (!root.bridgeSend({ op: "older", bot: bot, before: info.key })) return "no bridge"
+    root.setOlder(bot, { loading: true })
+    return "ok"
+  }
+
+  function applyOlder(botId, items, more) {
+    var list = root.historyEntries(items)
+    var oldest = (items || []).length > 0 ? String(items[0].key || "") : ""
+    root.setOlder(botId, { loading: false, more: more === true && oldest !== "", key: oldest || (root.olderInfo[botId] || {}).key })
+    if (list.length === 0) return
+    if (botId === root.threadBotId) {
+      root.prependingOlder = true
+      root.history = list.concat(root.history).slice(-root.historyLimit)
+      Qt.callLater(function () { root.prependingOlder = false })
+      return
+    }
+    var next = Object.assign({}, root.threads)
+    var thread = Object.assign({}, next[botId] || {})
+    thread.history = list.concat(thread.history || []).slice(-root.historyLimit)
+    next[botId] = thread
+    root.threads = next
+  }
+
+  function applyHistory(botId, items, more) {
     if (!root.findBot(botId) || !Array.isArray(items) || items.length === 0) return
     var list = []
     var i
@@ -426,9 +479,11 @@ Item {
     }
     list = list.slice(-root.historyLimit)
     if (list.length === 0) return
+    var olderState = { key: String(items[0].key || ""), more: more === true && String(items[0].key || "") !== "", loading: false }
     if (botId === root.threadBotId) {
       if (root.history.length > 0 || root.askedText !== "" || root.bubbleBody !== "" || root.asking) return
       root.history = list
+      root.setOlder(botId, olderState)
       return
     }
     var thread = root.threads[botId]
@@ -436,6 +491,7 @@ Item {
     var next = Object.assign({}, root.threads)
     next[botId] = Object.assign({}, thread || {}, { history: list })
     root.threads = next
+    root.setOlder(botId, olderState)
   }
   // Open clarifying questions by bot: the composer answers them while one waits.
   property var clarifyWaiting: ({})
@@ -616,6 +672,7 @@ Item {
       cardHeight: bubblePanel ? Math.round(bubblePanel.height) : 0,
       cardMax: bubblePanel ? Math.round(bubblePanel.maxHeight) : 0,
       history: root.history.length,
+      older: root.olderInfo[root.threadBotId] || null,
       asked: String(root.askedText || "").slice(0, 120)
     })
   }
@@ -660,7 +717,9 @@ Item {
     } else if (ev.ev === "progress") {
       if (mine && root.asking) root.progressText = root.plainLine(ev.text, 80)
     } else if (ev.ev === "history") {
-      root.applyHistory(bot, ev.items)
+      root.applyHistory(bot, ev.items, ev.more)
+    } else if (ev.ev === "older") {
+      root.applyOlder(bot, ev.items, ev.more)
     } else if (ev.ev === "complete") {
       if (mine) root.finishBridgeAsk(text, "")
       else if (ev.askId === undefined && text !== "") {

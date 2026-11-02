@@ -23,6 +23,7 @@ never prompt or reply text.
                     {"op": "respond", "bot", "promptId", "choice"}   approve / deny
                     {"op": "answer", "bot", "promptId", "answer"}    clarify
                     {"op": "compact", "bot"}               like Desktop's /compact
+                    {"op": "older", "bot", "before"}       the page before that history key
                     {"op": "reload"}                       re-read the roster
   bridge -> shell   {"ev": "ready"}
                     {"ev": "status", "bot", "state": "up"|"down", "detail"?}
@@ -35,7 +36,8 @@ never prompt or reply text.
                     {"ev": "settled", "bot", "promptId"}         answered anywhere
                     {"ev": "responded", "bot", "promptId", "ok", "text"?}
                     {"ev": "compacted", "bot", "ok", "text"}
-                    {"ev": "history", "bot", "items": [{"asked", "body"}]}  on attach
+                    {"ev": "history", "bot", "items": [{"asked", "body", "key"}], "more"}  on attach
+                    {"ev": "older", "bot", "items": [...], "more"}   an earlier page
   A "complete" for a turn started elsewhere (Desktop, Telegram, a teammate) carries
   "asked" when the question is known.
 """
@@ -102,31 +104,43 @@ def tool_label(payload: dict) -> str:
     return f"{label}…" if label else (f"Using {name[:48]}…" if name else "Working…")
 
 
-def history_items(messages, limit=HISTORY_EXCHANGES) -> list[dict]:
+def history_items(messages, limit=HISTORY_EXCHANGES):
     """The Bot Chat as the bubble shows it: what was asked and the final reply, oldest first.
 
     Tool rows, tool-call scaffolding and empty or silent replies are dropped; a turn Hermes
-    started itself (a background result, a teammate's delivery) shows as the bot speaking."""
+    started itself (a background result, a teammate's delivery) shows as the bot speaking.
+    Each exchange carries a ``key`` (its first row's message id) so earlier pages can be asked
+    for by position. ``limit=None`` returns them all."""
     items: list[dict] = []
     current = None
-    for row in messages or []:
+    for index, row in enumerate(messages or []):
         if not isinstance(row, dict):
             continue
         role, content = row.get("role"), row.get("content")
         if not isinstance(content, str):
             continue
+        key = str(row.get("message_uid") or row.get("message_id") or f"row-{index}")
         if role == "user":
             if current and current["body"]:
                 items.append(current)
             asked = "" if row.get("display_kind") in HIDDEN_KINDS else strip_note(content)
-            current = {"asked": clip(asked)[:4000], "body": ""}
+            current = {"asked": clip(asked)[:4000], "body": "", "key": key}
         elif role == "assistant" and content.strip() and not SILENCE.match(content):
             if current is None:
-                current = {"asked": "", "body": ""}
+                current = {"asked": "", "body": "", "key": key}
             current["body"] = clip(content).strip()[:4000]
     if current and current["body"]:
         items.append(current)
-    return items[-limit:]
+    return items if limit is None else items[-limit:]
+
+
+def history_page(items, before, limit=HISTORY_EXCHANGES):
+    """(the ``limit`` exchanges before the one keyed ``before``, whether older ones remain)."""
+    at = next((i for i, item in enumerate(items) if item.get("key") == before), None)
+    if at is None:
+        return [], False
+    start = max(0, at - limit)
+    return items[start:at], start > 0
 
 
 def config_dir() -> Path:
@@ -220,6 +234,7 @@ class BotState:
         self.held: list[dict] = []            # events seen while a submit's receipt is in flight
         self.submitting = 0
         self.asked: dict[str, str] = {}       # admission id -> the question, for turns started elsewhere
+        self.transcript: list[dict] = []      # every exchange of the Bot Chat as of the last attach
         self.prompts: dict[str, dict] = {}    # open approvals / questions by prompt id
         self.asks_by_prompt: dict[str, str] = {}
 
@@ -251,7 +266,9 @@ class BotState:
 
     def attached(self, snapshot: dict) -> None:
         """The recent conversation, then any prompts already open when this viewer attached."""
-        self.emit(ev="history", bot=self.bot, items=history_items(snapshot.get("messages")))
+        self.transcript = history_items(snapshot.get("messages"), limit=None)
+        recent = self.transcript[-HISTORY_EXCHANGES:]
+        self.emit(ev="history", bot=self.bot, items=recent, more=len(self.transcript) > len(recent))
         open_now = {str(p.get("prompt_id")): p for p in snapshot.get("prompts") or [] if isinstance(p, dict)}
         for prompt_id in list(self.prompts):
             if prompt_id not in open_now:
@@ -531,6 +548,9 @@ class Bridge:
                                                  "approval" if op == "respond" else "clarify"))
         elif op == "compact" and link is not None:
             asyncio.create_task(link.compact())
+        elif op == "older" and link is not None:
+            items, more = history_page(link.state.transcript, str(msg.get("before") or ""))
+            self.emit(ev="older", bot=bot, items=items, more=more)
 
     async def run(self) -> None:
         self.sync_links()

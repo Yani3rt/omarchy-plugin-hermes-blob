@@ -125,13 +125,11 @@ class HistoryAndProgressTest(unittest.TestCase):
             {"role": "user", "content": "q4"},
             {"role": "assistant", "content": "[SILENT]"},
         ]
-        self.assertEqual(bridge.history_items(rows), [
-            {"asked": "q1", "body": "a1"},
-            {"asked": "", "body": "The job finished."},
-            {"asked": "From Sentinel: ack", "body": "Got it."},
+        self.assertEqual([(i["asked"], i["body"]) for i in bridge.history_items(rows)], [
+            ("q1", "a1"), ("", "The job finished."), ("From Sentinel: ack", "Got it."),
         ])
         many = [r for i in range(30) for r in ({"role": "user", "content": f"q{i}"}, {"role": "assistant", "content": f"a{i}"})]
-        self.assertEqual(bridge.history_items(many)[0], {"asked": "q10", "body": "a10"})
+        self.assertEqual(bridge.history_items(many)[0]["asked"], "q10")
 
     def test_progress_names_what_the_bot_is_doing(self):
         self.assertEqual(bridge.tool_label({"tool_name": "message_agent", "args": {"target": "@sentinel"}}), "Messaging sentinel…")
@@ -151,11 +149,28 @@ class HistoryAndProgressTest(unittest.TestCase):
         self.assertEqual(out[-1], {"ev": "complete", "bot": "donna", "text": "Here you go.", "status": "complete",
                                    "asked": "from desktop"})
 
-    def test_attaching_sends_history_first(self):
+    def test_attaching_sends_the_latest_page_and_says_whether_more_remain(self):
         out = []
         state = bridge.BotState("donna", lambda **ev: out.append(ev))
-        state.attached({"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]})
-        self.assertEqual(out[0], {"ev": "history", "bot": "donna", "items": [{"asked": "hi", "body": "hello"}]})
+        state.attached({"messages": [{"role": "user", "content": "hi", "message_uid": "u1"},
+                                     {"role": "assistant", "content": "hello"}]})
+        self.assertEqual(out[0], {"ev": "history", "bot": "donna", "more": False,
+                                  "items": [{"asked": "hi", "body": "hello", "key": "u1"}]})
+        rows = [r for i in range(45) for r in ({"role": "user", "content": f"q{i}", "message_uid": f"u{i}"},
+                                              {"role": "assistant", "content": f"a{i}"})]
+        state.attached({"messages": rows})
+        self.assertTrue(out[-1]["more"])
+        self.assertEqual(out[-1]["items"][0]["key"], "u25")
+
+    def test_earlier_pages_come_twenty_at_a_time_until_none_remain(self):
+        rows = [r for i in range(45) for r in ({"role": "user", "content": f"q{i}", "message_uid": f"u{i}"},
+                                              {"role": "assistant", "content": f"a{i}"})]
+        items = bridge.history_items(rows, limit=None)
+        page, more = bridge.history_page(items, "u25")
+        self.assertEqual((page[0]["key"], page[-1]["key"], more), ("u5", "u24", True))
+        page, more = bridge.history_page(items, "u5")
+        self.assertEqual(([i["key"] for i in page], more), (["u0", "u1", "u2", "u3", "u4"], False))
+        self.assertEqual(bridge.history_page(items, "missing"), ([], False))
 
 
 class RosterTest(unittest.TestCase):

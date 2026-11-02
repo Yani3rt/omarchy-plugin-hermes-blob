@@ -695,6 +695,38 @@ Rectangle {
               easing.type: Easing.OutCubic
             }
 
+            // Earlier Bot Chat exchanges, a page of 20 at a time, above the oldest one shown.
+            Item {
+              width: parent.width
+              height: 30
+              visible: app ? app.olderHere : false
+              Rectangle {
+                id: olderChip
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: olderLabel.implicitWidth + 24
+                height: 28
+                radius: 14
+                color: Theme.field
+                border.width: 1
+                border.color: Theme.edgeLink
+                opacity: app && app.olderLoading ? 0.6 : 1
+                Behavior on opacity { NumberAnimation { duration: bubble.ms(140) } }
+                Text {
+                  id: olderLabel
+                  anchors.centerIn: parent
+                  text: app && app.olderLoading ? "Loading…" : "Load 20 earlier messages"
+                  color: Theme.textMuted
+                  font.pixelSize: 12
+                  font.family: app ? app.fontFamily : ""
+                  textFormat: Text.PlainText
+                }
+                HoverArea {
+                  label: "Load 20 earlier messages"
+                  onActivated: app.loadOlder()
+                }
+              }
+            }
+
             Repeater {
               model: app ? app.history : []
               delegate: Exchange {
@@ -725,7 +757,17 @@ Rectangle {
           // height the view is easing to, so while the thread still fits it
           // stays at the top and the view's growth reveals the new content;
           // once it is full, the scroll eases on the same curve.
+          // An earlier page went in above: keep the reader where they were, by the height it added.
+          property real lastContentHeight: 0
           onContentHeightChanged: {
+            var added = contentHeight - lastContentHeight
+            lastContentHeight = contentHeight
+            if (app && app.prependingOlder) {
+              scrollAnim.stop()
+              contentY = Math.max(0, contentY + Math.max(0, added))
+              atEnd = false
+              return
+            }
             var end = Math.max(0, contentHeight - Math.min(threadBox.cap, contentHeight))
             var target = Math.min(end, Math.max(0, latest.y))
             scrollAnim.stop()
