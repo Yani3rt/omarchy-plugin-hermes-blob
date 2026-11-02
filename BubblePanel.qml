@@ -283,6 +283,55 @@ Rectangle {
           }
         }
 
+        // Expand / collapse the card: chevrons apart to grow it, together to bring it back.
+        Rectangle {
+          id: expandButton
+          width: 32
+          height: 32
+          radius: 16
+          anchors.right: minimizeButton.left
+          anchors.rightMargin: 6
+          anchors.verticalCenter: parent.verticalCenter
+          visible: !app.settingsOpen
+          color: app.bubbleExpanded ? Theme.selected : Theme.raised
+          border.width: 1
+          border.color: app.bubbleExpanded ? Theme.edgeStrong : Theme.edge
+          Canvas {
+            id: expandIcon
+            anchors.fill: parent
+            property bool open: app.bubbleExpanded
+            onOpenChanged: requestPaint()
+            onPaint: {
+              var ctx = getContext("2d")
+              ctx.reset()
+              ctx.strokeStyle = Theme.textMuted
+              ctx.lineWidth = 1.6
+              ctx.lineCap = "round"
+              ctx.lineJoin = "round"
+              var cx = width / 2
+              var w = width * 0.17
+              var h = height * 0.09
+              // Expanded: chevrons point in (collapse). Compact: they point out (expand).
+              var top = open ? height * 0.40 : height * 0.33
+              var bottom = open ? height * 0.60 : height * 0.67
+              var dir = open ? 1 : -1
+              ctx.beginPath()
+              ctx.moveTo(cx - w, top - dir * h)
+              ctx.lineTo(cx, top + dir * h)
+              ctx.lineTo(cx + w, top - dir * h)
+              ctx.moveTo(cx - w, bottom + dir * h)
+              ctx.lineTo(cx, bottom - dir * h)
+              ctx.lineTo(cx + w, bottom + dir * h)
+              ctx.stroke()
+            }
+            onWidthChanged: requestPaint()
+          }
+          HoverArea {
+            label: app.bubbleExpanded ? "Collapse" : "Expand"
+            onActivated: app.toggleExpanded()
+          }
+        }
+
         Rectangle {
           id: headerPill
           height: 36
@@ -291,7 +340,8 @@ Rectangle {
           color: Theme.raised
           border.width: 1
           border.color: Theme.edge
-          width: Math.min(parent.width - 80, headerRow.implicitWidth + 22)
+          // Centred between the left button and the two on the right.
+          width: Math.min(parent.width - 156, headerRow.implicitWidth + 22)
 
           Row {
             id: headerRow

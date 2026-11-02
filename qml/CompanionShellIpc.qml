@@ -64,5 +64,7 @@ ShellIpc {
   function status(): string { return host.statusJson() }
   // Hermes mode: compact the bot on screen, or answer an open approval or question.
   function compact(): string { return host.compactConversation() }
+  // Grow the chat card to all the room on its side, or back to compact.
+  function expand(): string { return host.toggleExpanded() }
   function answer(promptId: string, value: string): string { return host.answerPrompt(promptId, value) }
 }

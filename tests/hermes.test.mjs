@@ -240,3 +240,16 @@ test('the bubble opens on each bot\'s recent Bot Chat and shows what it is doing
   // A turn from another surface lands with the question that started it.
   assert.match(main, /if \(asked !== ""\) root\.landReply\(root\.appendReply\(bot, text, \[\], asked\)\)/)
 })
+
+test('the chat card opens compact and its header button grows it to all the room', () => {
+  const main = fs.readFileSync(path.join(root, 'Main.qml'), 'utf8')
+  const panel = fs.readFileSync(path.join(root, 'BubblePanel.qml'), 'utf8')
+  assert.match(main, /property bool bubbleExpanded: false\n\s*readonly property real compactHeight: 440/)
+  assert.match(main, /return root\.bubbleExpanded \? full : Math\.min\(full, root\.compactHeight\)/)
+  assert.match(panel, /id: expandButton[\s\S]*?anchors\.right: minimizeButton\.left[\s\S]*?onActivated: app\.toggleExpanded\(\)/)
+  // The header pill leaves room for the extra button.
+  assert.match(panel, /width: Math\.min\(parent\.width - 156, headerRow\.implicitWidth \+ 22\)/)
+  for (const file of ['qml/CompanionShellIpc.qml', 'qml/CompanionIpcHandler.qml']) {
+    assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /function expand\(\): string \{ return host\.toggleExpanded\(\) \}/)
+  }
+})

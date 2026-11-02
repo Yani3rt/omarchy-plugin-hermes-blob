@@ -72,6 +72,15 @@ Item {
   }
 
   property bool ready: false
+  // The chat card's height: compact (the size it has always opened at) or all the room
+  // above or below the companion. Toggled from the card's header or `expand`.
+  property bool bubbleExpanded: false
+  readonly property real compactHeight: 440
+
+  function toggleExpanded() {
+    root.bubbleExpanded = !root.bubbleExpanded
+    return root.bubbleExpanded ? "expanded" : "compact"
+  }
   property bool present: true
   property bool bubbleOpen: false
   property string cardPage: "chat"
@@ -593,6 +602,9 @@ Item {
       buttons: root.noticeLinks.map(function (link) { return { label: link.label, promptId: link.promptId || "" } }),
       clarify: root.clarifyWaiting,
       progress: root.progressText,
+      expanded: root.bubbleExpanded,
+      cardHeight: bubblePanel ? Math.round(bubblePanel.height) : 0,
+      cardMax: bubblePanel ? Math.round(bubblePanel.maxHeight) : 0,
       history: root.history.length,
       asked: String(root.askedText || "").slice(0, 120)
     })
@@ -2471,7 +2483,10 @@ Item {
         var above = stage.y - 20
         var below = win.height - stage.y - stage.height - 20
         var room = root.anchorFromBottom ? above : below
-        return Math.max(360, Math.min(room, win.height - 16))
+        var full = Math.max(360, Math.min(room, win.height - 16))
+        // Compact by default, so a conversation loaded with its history keeps the card's
+        // usual size; the header's expand button gives it all the room on that side.
+        return root.bubbleExpanded ? full : Math.min(full, root.compactHeight)
       }
       x: Math.max(8, Math.min(stage.x + stage.width - width, win.width - width - 8))
       y: {
