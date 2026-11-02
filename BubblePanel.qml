@@ -283,8 +283,8 @@ Rectangle {
           }
         }
 
-        // Expand / collapse the card. Compact: a single ︿, centred. Expanded: ﹀ over a bar
-        // over ︿, the "fold" shape. The icon morphs between them with the card.
+        // Expand / collapse the card: a single centred chevron, ︿ while compact and ﹀ once
+        // expanded, flipping in step with the card.
         Rectangle {
           id: expandButton
           width: 32
@@ -317,37 +317,22 @@ Rectangle {
               var ctx = getContext("2d")
               ctx.reset()
               ctx.strokeStyle = Theme.text
+              ctx.globalAlpha = 0.85
               ctx.lineWidth = 1.7
               ctx.lineCap = "round"
               ctx.lineJoin = "round"
               var cx = width / 2
               var mid = height / 2
-              var arm = width * 0.17
+              var arm = width * 0.18
               var lift = height * 0.1
-              var gap = height * 0.21
-              // Compact (t = 0): one chevron, pointing up, centred: "grow".
-              // Expanded (t = 1): it rises and flips to point down, a second one rises from
-              // below pointing up, and a short bar fades in between them: "fold".
+              // One centred chevron: ︿ while compact ("grow"), ﹀ once expanded ("shrink").
+              // It folds through flat as the card moves, so the flip tracks the card.
               var dir = -1 + 2 * t
-              var top = mid - gap * t
-              var bottom = mid + gap
-              ctx.globalAlpha = 0.85
               ctx.beginPath()
-              ctx.moveTo(cx - arm, top - dir * lift)
-              ctx.lineTo(cx, top + dir * lift)
-              ctx.lineTo(cx + arm, top - dir * lift)
+              ctx.moveTo(cx - arm, mid - dir * lift)
+              ctx.lineTo(cx, mid + dir * lift)
+              ctx.lineTo(cx + arm, mid - dir * lift)
               ctx.stroke()
-              if (t > 0.01) {
-                var rise = (1 - t) * height * 0.12
-                ctx.globalAlpha = 0.85 * t
-                ctx.beginPath()
-                ctx.moveTo(cx - arm, bottom + rise + lift)
-                ctx.lineTo(cx, bottom + rise - lift)
-                ctx.lineTo(cx + arm, bottom + rise + lift)
-                ctx.moveTo(cx - arm * 0.9, mid)
-                ctx.lineTo(cx + arm * 0.9, mid)
-                ctx.stroke()
-              }
             }
             onWidthChanged: requestPaint()
           }
