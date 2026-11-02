@@ -1,10 +1,80 @@
 <h1 align="center">Hermes Blob</h1>
 
-<p align="center"><em>A fork of <a href="https://github.com/tcballard/omarchy-plugin-grokbot-desktop">Grok Bot Desktop Companion</a> by tcballard, being adapted to talk to Hermes Agent profiles.</em></p>
+<p align="center"><em>A fork of <a href="https://github.com/tcballard/omarchy-plugin-grokbot-desktop">Grok Bot Desktop Companion</a> by tcballard that talks to <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> profiles. The original Grok Bot modes still work.</em></p>
 
 <p align="center">Your bots, beside your work on Omarchy.</p>
 
 <p align="center"><a href="https://github.com/tcballard/omarchy-badges"><img alt="Built for Omarchy: Plugin" height="20" src="https://raw.githubusercontent.com/tcballard/omarchy-badges/75975e5b5bf75e7ede3764bcd2950046f7abfe2c/badges/v1/omarchy-plugin.svg"></a></p>
+
+## With Hermes Agent
+
+Each bot is a Hermes profile. Asks go to that profile's permanent **Bot Chat**, the same conversation Hermes Desktop's Bots tab opens, through the local Hermes gateway, so a bot remembers the conversation, can hand work to its teammates, and asks you before running something risky.
+
+### Requirements
+
+- **Omarchy 4 on Hyprland.** Tested on packaged stable Omarchy 4.0.6; the IPC bridge falls back to Quickshell's `IpcHandler` where `ShellIpc` is missing.
+- **Hermes Agent, installed from git** at `~/.hermes/hermes-agent` (the default `git` install method; set `hermesAgentDir` otherwise). The bridge runs under that install's own Python (`venv/bin/python`, which includes `websockets`) and uses Hermes' own gateway client, the module `hermes chat`, the TUI and Desktop use. Tested with Hermes Agent v0.22.5 (2026.9.24). Those modules are internal to Hermes, so a Hermes update can change them; asks then fall back to the command line (below) until the bridge is updated.
+- **The Hermes gateway running** for your profiles (for example the `hermes-gateway` systemd user service, or `hermes gateway run`). If none is running, the bridge asks Hermes to start one (`hermes gateway ensure`).
+- **A Bot Chat per bot.** Hermes Desktop creates one for every Bot; on a headless install create it once per profile:
+  ```bash
+  printf 'Hello' | hermes -p <profile> chat --in ~ -c "Bot Chat" --create-if-missing --query-file - -Q
+  ```
+  For teammates to hand work to each other (`message_agent`), Hermes also needs the install to be Bot-Mode managed: Desktop does this, or add `ui_meta: { hermes-bots: {} }` to any one profile's `profile.yaml` (see Hermes' Bot Mode docs).
+- **`hermes` on `PATH`** (`~/.local/bin` or `/usr/bin`) for the command-line fallback.
+- **PyYAML for the system Python** (`python-yaml` on Arch) so roster sync can read each profile's Bot Mode title, shape and colour. Without it the bots are still listed, by profile name.
+- **Approvals** reach the bubble only when a profile asks for them (`approvals.mode: manual`, or `smart` for the commands it flags).
+- Optional, for the dictation button: [Hex](https://github.com/anomalyco/hex), Voxtype or Superwhisper.
+
+### Set up
+
+```bash
+omarchy plugin add https://github.com/Yani3rt/omarchy-plugin-hermes-blob --enable
+```
+
+Then tell it to use Hermes, in `~/.config/omarchy/grokbot-desktop.json`:
+
+```json
+{
+  "dispatch": "hermes",
+  "hermesPrimary": "donna",
+  "askTimeoutSeconds": 600
+}
+```
+
+`hermesPrimary` is the profile listed first (default `default`). Run `omarchy restart shell`, then **Appearance & bots → Sync bots** (or `bin/grokbot-sync --hermes`) to list your profiles. Check the connection:
+
+```bash
+omarchy-shell io.github.tcballard.grokbot-desktop status
+```
+
+`bridge.up` shows each bot that is attached to its Bot Chat. To keep the companion on one screen, add `"monitor": "DP-3"` (your output's name from `hyprctl monitors`) to its entry in `~/.config/omarchy/shell.json`; otherwise it opens on the screen focused when the shell starts.
+
+### What works
+
+- **One ongoing conversation per bot**, opening on its recent Bot Chat (20 exchanges), with **Load 20 earlier messages** at the top, up to 100, keeping your place.
+- **Switching bots**, each with its own conversation, draft and unread dot; the roster comes from your profiles' Bot Mode looks.
+- **Streaming replies**, with a faint line saying what the bot is doing ("Running a command…", "Messaging sentinel…").
+- **Handoffs between bots** with Hermes' `message_agent`, and the late reply landing in the right conversation.
+- **Turns started elsewhere** (Desktop, Telegram, the CLI, a routine) showing up in the bot's conversation with their question.
+- **Approvals** (Allow once, Allow this session, Always allow, Deny) and **clarifying questions** (choice buttons, or type the answer) answered in the bubble.
+- **Stop** that interrupts the turn inside Hermes, and **Compact conversation** (Desktop's `/compact`) in the right-click menu.
+- **A compact card** that grows to the full height of its side with the expand button, and a **Scroll down** chip when the latest message is out of view.
+- **Dictation** with Hex, inserted into the bubble's field.
+
+### Limits
+
+- Asks with attachments, and asks to a bot the bridge has not attached yet, run through the command line (`hermes -p <profile> chat -c "Bot Chat" --query-file - -Q`): slower, and without live progress.
+- A Bot Chat's history in the bubble starts at its last compression.
+- Each ask carries the bot's whole Bot Chat, as it does in Desktop; Hermes' per-profile compression settings decide how large that gets.
+- Typed wake phrases ("Hey Donna, check the VM") work everywhere; routing a *dictated* wake phrase from Voxtype or Superwhisper's watcher needs Omarchy dev's private shell socket.
+- When the companion sits at the top of the screen, expanding still grows the card upward (see [TODO.md](TODO.md)).
+
+### Troubleshooting
+
+- **A bot shows `false` in `status` → `bridge.up`.** The bridge's reason is in the shell's log (`journalctl --user | grep hermes-blob-bridge`). "No Bot Chat yet": create it as above. "Its Bot Chat's saved working folder no longer exists": the chat was made on another machine or path; archive it from Hermes Desktop so the next open starts a fresh one.
+- **Nothing attaches.** Check that `~/.hermes/hermes-agent/venv/bin/python` exists (or set `hermesPython`) and that the gateway is running (`hermes gateway status`). After updating Hermes, run `omarchy restart shell`.
+
+## The original companion
 
 A floating desktop companion for Omarchy: pick a bot, ask a question, and keep working beside its reply. Sync names and avatar styles from the Grok Bot desktop app, then connect a webhook routine for real bot replies or use an authenticated local coding agent.
 
@@ -97,6 +167,16 @@ bin/grokbot-desktop-ctl reply 4f9c2a7e1b03 < answer.txt
 omarchy-shell io.github.tcballard.grokbot-desktop sayLink "PR Merged" "omarchy-spaces #27 merged." "Open PR" "https://github.com/tornikegomareli/omarchy-spaces/pull/27"
 ```
 
+Hermes mode adds:
+
+```bash
+omarchy-shell io.github.tcballard.grokbot-desktop status      # read-only JSON: bot on screen, bridge per bot, reply start, buttons, card and scroll
+omarchy-shell io.github.tcballard.grokbot-desktop expand      # toggle the card between compact and full height
+omarchy-shell io.github.tcballard.grokbot-desktop older       # load the 20 exchanges before the oldest one shown
+omarchy-shell io.github.tcballard.grokbot-desktop compact     # compact the bot on screen's Bot Chat
+omarchy-shell io.github.tcballard.grokbot-desktop answer <promptId> <value>   # answer an open approval or question
+```
+
 `say` with a bot's name as the title (`say "Bob" "…"`) is that bot speaking: the message goes in its own conversation, whose pill already names it, so no name line goes above it, and it keeps its line breaks, up to 4,000 characters. If another bot is on screen, the speaker's chip gets the unread dot. Any other title (`say "PR Merged" "…"`) is a one-line notice with the title above it. `animate` accepts `wave`, `think`, `happy`, `celebrate`, `alert`, `sleep`, `hop`, `spin`, and `morph`. `sayLinks` takes a second label and URL. Links must be `https`, or `http` to localhost, with no credentials. A button opens only when you click it.
 
 `bot` accepts an id, a short name (`OmaBot`, `Poteto`, `dr eggbot`), or the full profile name. `reply` answers a waiting webhook ask by its id, or the oldest waiting question of a bot named the same way; see [How a webhook ask comes back](#how-a-webhook-ask-comes-back).
@@ -113,7 +193,7 @@ TRANSCRIPT
 
 The composer's right-hand button changes with the field. With an empty field it shows the waveform: it focuses the field, lights the waveform, and runs `omarchy dictation toggle`. Once you type it becomes a send arrow, and while an ask runs it becomes Stop.
 
-Omarchy reads `~/.config/omarchy/defaults/dictation` and toggles whichever backend you picked, Superwhisper or Voxtype. On stable Omarchy, which has no `omarchy dictation`, the button tries the backend named there, then Superwhisper, Voxtype (only while its daemon runs) and [Hex](https://github.com/anomalyco/hex) (`hex dictation toggle`, opening Hex first when it is closed), and uses the first that takes the toggle. Superwhisper's own toggle is Alt+Space (`superwhisper record`). Voxtype's is `voxtype record toggle`, also bound to Super+Ctrl+X. If `omarchy` is not on `PATH`, the button calls that backend command directly. Both backends share one wake-phrase router.
+Omarchy reads `~/.config/omarchy/defaults/dictation` and toggles whichever backend you picked, Superwhisper or Voxtype. On stable Omarchy, which has no `omarchy dictation`, the button tries the backend named there, then Superwhisper, Voxtype (only while its daemon runs) and [Hex](https://github.com/anomalyco/hex), and uses the first that takes the toggle. Hex pastes into the focused app window, which the companion's card is not, so with Hex the button starts a recording (`hex dictation start`, opening Hex first when it is closed) and the next press finishes it with `hex dictation stop --print`; the transcript comes back on the helper's stdout and goes in at the field's cursor. Finishing with Hex's own shortcut instead pastes into the app behind the card. Superwhisper's own toggle is Alt+Space (`superwhisper record`). Voxtype's is `voxtype record toggle`, also bound to Super+Ctrl+X. If `omarchy` is not on `PATH`, the button calls that backend command directly. Both backends share one wake-phrase router.
 
 Say "Hey Bot", "Hey Bob", "Hey Grok", or "Hey Grok Bot" and the companion asks Bob (`e0195a7d-f804-4688-9191-e2cf3574a6d1`). Say "Hey OmaBot", "Hey Writer", "Hey Inbox Admin", or any other roster short name or full name, and it selects that bot. The wake phrase and a following comma or colon are removed, the bubble opens, and the rest is asked immediately. Submitting "Hey OmaBot check the VM" from the field does the same thing.
 
@@ -167,7 +247,9 @@ While Hermes mode is on, the shell keeps one bridge process (`bin/hermes-blob-br
 - Stop interrupts the turn inside the gateway;
 - an approval shows the command with **Allow once**, **Allow this session**, **Always allow** and **Deny** (whichever the gateway offers); a clarifying question shows its choices as buttons, or you type the answer in the field. Whichever surface answers first wins, and the buttons go when it is answered anywhere or times out;
 - the card opens at its usual compact height even with history loaded; the expand button in its header (beside close) grows it to all the room above or below the companion, and back. `omarchy-shell io.github.tcballard.grokbot-desktop expand` toggles it too;
-- **Compact conversation** in the right-click menu does what Desktop's `/compact` does: a fresh working context, summarised, in the same Bot Chat.
+- **Compact conversation** in the right-click menu does what Desktop's `/compact` does: a fresh working context, summarised, in the same Bot Chat;
+- a **Scroll down** chip rises in over the bottom of the thread while the latest message is out of view; clicking it eases the thread to the end, and reaching the end any way sends it away;
+- **Load 20 earlier messages** stops at 100 exchanges per conversation.
 
 Asks with attachments, or for a bot the bridge has not attached yet, go through the command-line helper instead (`hermes -p <profile> chat -c "Bot Chat" --query-file - -Q`). Optional keys: `hermesRoot` (default `~/.hermes`), `hermesAgentDir` (default `~/.hermes/hermes-agent`), `hermesPython` (default its `venv/bin/python`), `hermesCommand` (default `hermes`). `omarchy-shell io.github.tcballard.grokbot-desktop status` prints the bot on screen, the bridge's state per bot, the start of the visible reply and any answer buttons. `compact` and `answer <promptId> <value>` do the same as the menu item and the buttons; an `answer` is visible in process listings while it runs, so type private answers in the field instead.
 
