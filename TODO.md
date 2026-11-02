@@ -16,7 +16,7 @@ Open items for the Hermes side of this fork, in no particular order.
 
 ## Upstream and identity
 
-- **Feedback to tcballard.** Upstream PR #24 breaks five existing tests (IPC methods moved out of `Main.qml`) and its `IpcHandler` bridge logs `Type QVariant cannot be used across IPC` on stable Omarchy. Both are fixed here (commits `3cf9d53`, `e8956c5`); offer them on the PR.
+- **Upstream contributions (posted).** Follow-up fixes for PR #24 offered in a comment (branch `pr24-followups`); PR #25 (dictation on stable Omarchy, Hex) and PR #26 (agent Stop and `askTimeoutSeconds`) opened. Still to propose: the card UI (compact/expand, Scroll down, `status`), and an issue asking whether an optional Hermes mode is wanted upstream.
 - **Plugin id.** Still `io.github.tcballard.grokbot-desktop` so upstream merges stay clean. Rename to a Hermes Blob id (with a settings migration) if the fork stops tracking upstream.
 
 ## Done recently
