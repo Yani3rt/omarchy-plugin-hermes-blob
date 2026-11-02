@@ -664,6 +664,7 @@ Rectangle {
           boundsBehavior: Flickable.StopAtBounds
           ScrollBar.vertical: ScrollBar { policy: threadFlick.contentHeight > threadFlick.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
           onMovementStarted: scrollAnim.stop()
+          onContentYChanged: if (contentY < 24 && app && app.olderHere) olderRow.reached = true
           // Whether the reader is at the latest message: then a card that grows or shrinks
           // keeps it in view, instead of the thread sliding under the composer.
           property bool atEnd: true
@@ -696,33 +697,96 @@ Rectangle {
             }
 
             // Earlier Bot Chat exchanges, a page of 20 at a time, above the oldest one shown.
+            // It arrives where the reader is looking: once the thread is scrolled to its top (or
+            // already fits), the row opens, the chip pops in, and its arrow nudges upward. Then it
+            // stays put for this conversation, so scrolling away does not jolt the thread.
             Item {
+              id: olderRow
+              property bool reached: false
+              readonly property bool shown: app ? app.olderHere && reached : false
+              property real t: shown ? 1 : 0
+              Behavior on t { NumberAnimation { duration: bubble.ms(olderRow.shown ? 420 : 200); easing.type: olderRow.shown ? Easing.OutBack : Easing.InCubic; easing.overshoot: 1.4 } }
               width: parent.width
-              height: 30
-              visible: app ? app.olderHere : false
+              height: 30 * Math.max(0, Math.min(1, t))
+              visible: t > 0.01
+              clip: t < 0.999
+              Connections {
+                target: app
+                function onThreadBotIdChanged() { olderRow.reached = false; Qt.callLater(olderRow.check) }
+                function onOlderHereChanged() { Qt.callLater(olderRow.check) }
+              }
+              // A thread that fits (or is already at its top) shows it straight away.
+              function check() {
+                if (app && app.olderHere && threadFlick.contentY < 24) olderRow.reached = true
+              }
+              Component.onCompleted: Qt.callLater(check)
+              onShownChanged: if (shown) arrowNudge.restart()
+
               Rectangle {
                 id: olderChip
                 anchors.horizontalCenter: parent.horizontalCenter
-                width: olderLabel.implicitWidth + 24
+                anchors.verticalCenter: parent.verticalCenter
+                width: olderContent.implicitWidth + 24
                 height: 28
                 radius: 14
                 color: Theme.field
                 border.width: 1
                 border.color: Theme.edgeLink
-                opacity: app && app.olderLoading ? 0.6 : 1
+                opacity: Math.max(0, Math.min(1, olderRow.t)) * (app && app.olderLoading ? 0.6 : 1)
+                scale: 0.82 + 0.18 * olderRow.t
                 Behavior on opacity { NumberAnimation { duration: bubble.ms(140) } }
-                Text {
-                  id: olderLabel
+
+                Row {
+                  id: olderContent
                   anchors.centerIn: parent
-                  text: app && app.olderLoading ? "Loading…" : "Load 20 earlier messages"
-                  color: Theme.textMuted
-                  font.pixelSize: 12
-                  font.family: app ? app.fontFamily : ""
-                  textFormat: Text.PlainText
+                  spacing: 6
+                  Canvas {
+                    id: olderArrow
+                    width: 10
+                    height: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    property real lift: 0
+                    transform: Translate { y: -olderArrow.lift }
+                    onPaint: {
+                      var ctx = getContext("2d")
+                      ctx.reset()
+                      ctx.strokeStyle = Theme.textMuted
+                      ctx.lineWidth = 1.5
+                      ctx.lineCap = "round"
+                      ctx.lineJoin = "round"
+                      ctx.beginPath()
+                      ctx.moveTo(width / 2, height - 1.5)
+                      ctx.lineTo(width / 2, 1.5)
+                      ctx.moveTo(1.5, width / 2)
+                      ctx.lineTo(width / 2, 1.5)
+                      ctx.lineTo(width - 1.5, width / 2)
+                      ctx.stroke()
+                    }
+                  }
+                  Text {
+                    id: olderLabel
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: app && app.olderLoading ? "Loading…" : "Load 20 earlier messages"
+                    color: Theme.textMuted
+                    font.pixelSize: 12
+                    font.family: app ? app.fontFamily : ""
+                    textFormat: Text.PlainText
+                  }
                 }
                 HoverArea {
                   label: "Load 20 earlier messages"
                   onActivated: app.loadOlder()
+                }
+              }
+
+              // Two quick upward nudges of the arrow once the chip has landed.
+              SequentialAnimation {
+                id: arrowNudge
+                PauseAnimation { duration: bubble.ms(380) }
+                SequentialAnimation {
+                  loops: 2
+                  NumberAnimation { target: olderArrow; property: "lift"; to: 3; duration: bubble.ms(170); easing.type: Easing.OutQuad }
+                  NumberAnimation { target: olderArrow; property: "lift"; to: 0; duration: bubble.ms(230); easing.type: Easing.OutBounce }
                 }
               }
             }

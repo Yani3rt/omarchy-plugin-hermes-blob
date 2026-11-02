@@ -270,6 +270,10 @@ test('earlier Bot Chat pages load twenty at a time and keep the reader\'s place'
   assert.match(main, /&& root\.history\.length < root\.olderCap/)
   assert.match(qmlFunction(main, 'applyOlder'), /var room = Math\.max\(0, root\.olderCap - shown\)/)
   assert.match(panel, /text: app && app\.olderLoading \? "Loading…" : "Load 20 earlier messages"/)
+  // An upward arrow inside the chip, and an entrance that is hard to miss (honouring reduced motion).
+  assert.match(panel, /id: olderArrow[\s\S]*?ctx\.lineTo\(width \/ 2, 1\.5\)/)
+  assert.match(panel, /Behavior on t \{ NumberAnimation \{ duration: bubble\.ms\(olderRow\.shown \? 420 : 200\)/)
+  assert.match(panel, /onShownChanged: if \(shown\) arrowNudge\.restart\(\)/)
   assert.match(panel, /if \(app && app\.prependingOlder\) \{\n\s*scrollAnim\.stop\(\)\n\s*contentY = Math\.max\(0, contentY \+ Math\.max\(0, added\)\)/)
   for (const file of ['qml/CompanionShellIpc.qml', 'qml/CompanionIpcHandler.qml']) {
     assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /function older\(\): string \{ return host\.loadOlder\(\) \}/)
