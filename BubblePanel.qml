@@ -356,8 +356,9 @@ Rectangle {
           color: Theme.raised
           border.width: 1
           border.color: Theme.edge
-          // Centred between the left button and the two on the right.
-          width: Math.min(parent.width - 156, headerRow.implicitWidth + 22)
+          // Centred between the left button and the two on the right (expand, close).
+          readonly property real widest: parent.width - 156
+          width: Math.min(widest, headerRow.implicitWidth + 22)
 
           Row {
             id: headerRow
@@ -366,7 +367,7 @@ Rectangle {
             height: parent.height
             // Name, mark, chevron, padding, and spacing come out of the pill's
             // widest size; the role takes what is left and elides.
-            readonly property real roleRoom: header.width - 80 - 22 - 8 - 22 - 12 - 6 * 3 - nameText.implicitWidth
+            readonly property real roleRoom: headerPill.widest - 22 - 8 - 22 - 12 - 6 * 3 - nameText.implicitWidth
             CompanionMark {
               width: 22
               height: 22

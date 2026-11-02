@@ -253,7 +253,9 @@ test('the chat card opens compact and its header button grows it to all the room
   assert.match(panel, /property real t: app\.expandT\n\s*onTChanged: requestPaint\(\)/)
   assert.match(panel, /onHeightChanged: \{\n\s*if \(atEnd && !scrollAnim\.running\) contentY = Math\.max\(0, contentHeight - height\)/)
   // The header pill leaves room for the extra button.
-  assert.match(panel, /width: Math\.min\(parent\.width - 156, headerRow\.implicitWidth \+ 22\)/)
+  // The pill and the role that slides out on hover share one limit, so neither runs under the buttons.
+  assert.match(panel, /readonly property real widest: parent\.width - 156\n\s*width: Math\.min\(widest, headerRow\.implicitWidth \+ 22\)/)
+  assert.match(panel, /readonly property real roleRoom: headerPill\.widest - 22 - 8 - 22 - 12 - 6 \* 3 - nameText\.implicitWidth/)
   for (const file of ['qml/CompanionShellIpc.qml', 'qml/CompanionIpcHandler.qml']) {
     assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /function expand\(\): string \{ return host\.toggleExpanded\(\) \}/)
   }
