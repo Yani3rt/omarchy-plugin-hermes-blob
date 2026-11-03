@@ -5,6 +5,8 @@ Open items for the Hermes side of this fork, in no particular order.
 ## Companion
 
 - **Expand towards the screen, not off it.** When the companion sits at the top of the screen (the card opens below it), the expand button should grow the card from top to bottom. Check `maxHeight` / the card's `y` and `transformOrigin` in `Main.qml` for the `anchorFromBottom === false` case, and the chevron direction (it should point down to grow there).
+- **Per-bot custom looks.** A custom shape/colour is one setting for the whole companion (`syncAppearance: false`), so every bot wears it. Consider saving a custom look per bot, with Reset returning that bot to its Hermes look.
+- **Auto-sync the roster.** Re-run the Hermes sync when `~/.hermes/profiles` changes, so new or restyled profiles appear without clicking Sync bots.
 - **Show/hide shortcut.** Add a Hyprland binding (README suggests `SUPER + ALT + B` → `omarchy-shell io.github.tcballard.grokbot-desktop toggleVisible`).
 
 ## Hermes
