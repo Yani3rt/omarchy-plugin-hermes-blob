@@ -527,7 +527,10 @@ Item {
     var i
     if (ev.kind === "approval") {
       var command = root.cleanText(ev.command, 1200)
-      text = "Needs your approval: " + (text || "run a command") + (command !== "" && command !== text ? "\n\n" + command : "")
+      // The command goes in a code block (a ~~~ fence if it holds backticks), so its
+      // characters are never read as formatting.
+      var fence = command.indexOf("```") >= 0 ? "~~~~" : "```"
+      text = "Needs your approval: " + (text || "run a command") + (command !== "" && command !== text ? "\n\n" + fence + "\n" + command + "\n" + fence : "")
       for (i = 0; i < choices.length; i++) {
         var choice = String(choices[i])
         links.push({ label: root.approvalLabels[choice] || root.plainLine(choice, 24), action: "respond", bot: bot, promptId: promptId, value: choice })

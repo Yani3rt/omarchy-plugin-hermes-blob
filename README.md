@@ -53,6 +53,7 @@ omarchy-shell io.github.tcballard.grokbot-desktop status
 
 - **One ongoing conversation per bot**, opening on its recent Bot Chat (20 exchanges), with **Load 20 earlier messages** at the top, up to 100, keeping your place.
 - **Switching bots**, each with its own conversation, draft and unread dot; the roster comes from your profiles' Bot Mode looks.
+- **Markdown in replies**: bold, italic, `code`, code blocks, headings, lists, quotes, tables and links. The reply is escaped before any formatting is added, so it can carry no markup of its own; images show as their alt text and are never loaded, and only links the companion would open (https, or http to localhost) are clickable.
 - **Streaming replies**, with a faint line saying what the bot is doing ("Running a command…", "Messaging sentinel…").
 - **Handoffs between bots** with Hermes' `message_agent`, and the late reply landing in the right conversation.
 - **Turns started elsewhere** (Desktop, Telegram, the CLI, a routine) showing up in the bot's conversation with their question.
