@@ -64,8 +64,6 @@ omarchy-shell io.github.tcballard.grokbot-desktop status
 ### Limits
 
 - Asks with attachments, and asks to a bot the bridge has not attached yet, run through the command line (`hermes -p <profile> chat -c "Bot Chat" --query-file - -Q`): slower, and without live progress.
-- A Bot Chat's history in the bubble starts at its last compression.
-- Each ask carries the bot's whole Bot Chat, as it does in Desktop; Hermes' per-profile compression settings decide how large that gets.
 - Typed wake phrases ("Hey Donna, check the VM") work everywhere; routing a *dictated* wake phrase from Voxtype or Superwhisper's watcher needs Omarchy dev's private shell socket.
 - When the companion sits at the top of the screen, expanding still grows the card upward (see [TODO.md](TODO.md)).
 
