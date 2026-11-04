@@ -54,6 +54,16 @@ class DesktopIntegration(unittest.TestCase):
             result=self.run_helper('agent-desktop-history',dict(provider=provider,botId='echo'))
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertEqual(json.loads(result.stdout),{'items':[],'nextCursor':None})
+    def test_streaming_ask_takes_its_request_as_the_first_line_and_keeps_stdin_open(self):
+        (self.config/'agent-desktop.json').write_text(json.dumps({'providers':{'example':{}}}))
+        proc=subprocess.Popen(['/usr/bin/python3','-I',str(ROOT/'bin'/'agent-desktop-ask')],env=self.env,
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        proc.stdin.write(json.dumps(dict(provider='example',botId='echo',askId='abcdef123459',prompt='Open stdin',stream=True))+'\n')
+        proc.stdin.flush()
+        # stdin stays open (as the shell keeps it for prompt answers); the reply still completes.
+        out,err=proc.communicate(timeout=20)
+        self.assertEqual(proc.returncode,0,err)
+        self.assertEqual(json.loads(out.splitlines()[-1]),{'ev':'final','text':'Example: Open stdin'})
     def test_broken_hermes_does_not_remove_working_example(self):
         (self.config/'agent-desktop.json').write_text(json.dumps({'providers':{'example':{},'hermes':{'root':str(self.home/'missing')}}}))
         result=self.run_helper('agent-desktop-roster')
