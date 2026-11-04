@@ -48,6 +48,12 @@ class DesktopIntegration(unittest.TestCase):
         # Without stream, the reply stays the plain one-shot text the Grok path relies on.
         plain=self.run_helper('agent-desktop-ask',dict(provider='example',botId='echo',askId='abcdef123458',prompt='Plain test'))
         self.assertEqual(plain.stdout,'Example: Plain test\n')
+    def test_history_helper_answers_empty_for_providers_without_history(self):
+        (self.config/'agent-desktop.json').write_text(json.dumps({'providers':{'example':{}}}))
+        for provider in ('example', 'grokbot'):
+            result=self.run_helper('agent-desktop-history',dict(provider=provider,botId='echo'))
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(json.loads(result.stdout),{'items':[],'nextCursor':None})
     def test_broken_hermes_does_not_remove_working_example(self):
         (self.config/'agent-desktop.json').write_text(json.dumps({'providers':{'example':{},'hermes':{'root':str(self.home/'missing')}}}))
         result=self.run_helper('agent-desktop-roster')

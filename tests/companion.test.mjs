@@ -2085,3 +2085,18 @@ test('a provider ask streams into the bubble, with what the agent is doing benea
   assert.match(qmlFunction(main, 'cancelAsk'), /root\.progressText = ""/)
   assert.match(panel, /status: app && app\.askingHere \? app\.progressText : ""/)
 })
+
+test('a provider bot opens on its recent history, and earlier pages load twenty at a time', () => {
+  const panel = read('BubblePanel.qml')
+  // Once per bot, only into a conversation that is still empty here, never for Grok.
+  const maybe = qmlFunction(main, 'maybeLoadHistory')
+  assert.match(maybe, /if \(root\.history\.length > 0 \|\| root\.askedText !== "" \|\| root\.bubbleBody !== "" \|\| root\.asking\) return/)
+  assert.match(qmlFunction(main, 'runHistory'), /bot\.provider === "grokbot"/)
+  assert.match(qmlFunction(main, 'loadOlder'), /if \(root\.history\.length >= root\.olderCap\) return "limit"/)
+  assert.match(main, /readonly property int olderCap: 100/)
+  assert.match(qmlFunction(main, 'applyOlder'), /root\.history = list\.concat\(root\.history\)\.slice\(-root\.historyLimit\)/)
+  // The chip arrives noticeably, and the reader's place is held while a page goes in above.
+  assert.match(panel, /text: app && app\.olderLoading \? "Loading…" : "Load 20 earlier messages"/)
+  assert.match(panel, /onShownChanged: if \(shown\) arrowNudge\.restart\(\)/)
+  assert.match(panel, /contentY = Math\.max\(0, contentHeight - olderFromBottom\)/)
+})
